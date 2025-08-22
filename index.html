@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WEFT Playground — distributed</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <div id="toolbar">
+      <button id="runBtn">Run</button>
+      <button id="mediaBtn">Start Media</button>
+      <button id="ex1Btn">Load Example 1</button>
+      <button id="ex2Btn">Load Example 2</button>
+      <div class="pill" id="frameIndicator">●</div>
+      <span class="pill" id="fpsPill">FPS: —</span>
+      <span class="pill" id="perfPill">Frame: — ms</span>
+      <span class="pill" id="resPill">Res: 360×202</span>
+      <div style="flex-basis:100%;"></div>
+      <button id="autorunBtn" type="button">Auto-run</button>
+      <button id="interpToggle" type="button">Interpolation</button>
+    </div>
+    <textarea id="editor" spellcheck="false"></textarea>
+    <div id="help">
+      <div><strong>Notes</strong>: CPU renderer for clarity. Keep resolutions modest for smooth frames. Use <code>Start Media</code> once to allow audio/video playback.</div>
+      <div>Built-ins: <code>sin cos tan atan2 sqrt abs exp log min max clamp floor ceil round distance length</code>, <code>noise</code>.</div>
+      <div>Spindles: <code>load</code>, <code>sample</code>, <code>video</code> (samples last loaded image/video), <code>analyze_volume</code>, <code>kaleidoscope</code>, <code>compose</code>, <code>ripple</code>.</div>
+      <div>Coords: <code>me.x me.y me.t me.frames me.width me.height</code>; Mouse: <code>mouse@x mouse@y</code>.</div>
+    </div>
+    <div id="errors"></div>
+  </div>
+  <div id="right">
+    <div id="canvasWrap">
+      <canvas id="out" width="160" height="90"></canvas>
+      <div id="rgbDisplay">RGB: —, —, —</div>
+      <div id="stats">
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js" defer></script>
+<script src="parser.js" defer></script>
+<script src="runtime.js" defer></script>
+<script src="renderer.js" defer></script>
+<script src="examples.js" defer></script>
+<script src="main.js" defer></script>
+</body>
+</html>
