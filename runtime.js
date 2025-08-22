@@ -549,10 +549,30 @@ function compileSpindleBody(astBody, paramNames, outNames, argExprs, outerEnv){
 // Program executor
 class Executor {
   constructor(env){ this.env = env; this.ast = null; }
+  
+  loadStandardLibrary() {
+    // Load standard library spindles if available
+    if (window.StandardLibraryCode && window.Parser) {
+      try {
+        const stdlibAst = Parser.parse(window.StandardLibraryCode);
+        for (const s of stdlibAst.body) {
+          if (s.type === "SpindleDef") {
+            this.env.spindles.set(s.name, s);
+          }
+        }
+        console.log('Standard library loaded:', Object.keys(this.env.spindles).length, 'spindles');
+      } catch (e) {
+        console.warn('Failed to load standard library:', e.message);
+      }
+    }
+  }
   run(ast){
     this.ast = ast;
     this.env.instances.clear();
     this.env.displayFns = null;
+
+    // Load standard library spindles first
+    this.loadStandardLibrary();
 
     for(const s of ast.body){
       if(s.type==="SpindleDef") this.env.spindles.set(s.name, s);

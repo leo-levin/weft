@@ -52,8 +52,7 @@ canvas.addEventListener('click', (e)=>{
 
 let debounceTimer = null;
 const autorunBtn = document.getElementById('autorunBtn');
-env.autorun = true;
-autorunBtn.classList.add('active');
+env.autorun = false;
 autorunBtn.addEventListener('click', () => {
   env.autorun = !env.autorun;
   autorunBtn.classList.toggle('active', env.autorun);
@@ -70,12 +69,6 @@ document.getElementById('mediaBtn').addEventListener('click', ()=>{
   try { env.audio.ctx && env.audio.ctx.resume && env.audio.ctx.resume(); } catch {}
   try { env.audio.element && env.audio.element.play(); } catch {}
   try { env.defaultSampler && env.defaultSampler.play(); } catch {}
-});
-document.getElementById('ex1Btn').addEventListener('click', ()=>{
-  editor.value = example1.trim(); persistAndRun();
-});
-document.getElementById('ex2Btn').addEventListener('click', ()=>{
-  editor.value = example2.trim(); persistAndRun();
 });
 
 function persistAndRun(){
@@ -96,6 +89,15 @@ function runCode(){
     errorsEl.textContent = (e && e.message) ? e.message : String(e);
   }
 }
+
+// Load standard library
+fetch('./standard.weft')
+  .then(response => response.text())
+  .then(code => {
+    window.StandardLibraryCode = code;
+    console.log('Standard library code loaded');
+  })
+  .catch(e => console.warn('No standard library found:', e.message));
 
 const saved = localStorage.getItem('weft_code');
 if(saved){ editor.value = saved; } else { editor.value = defaultCode().trim(); }

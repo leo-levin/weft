@@ -1,0 +1,16 @@
+// Example:
+// spindle mix(a, b, t)::<result> {
+//   result = a * (1 - t) + b * t
+// }
+
+spindle threshold(i, level)::<result> {
+  let placeholder = if (i > level) then 0 else 1
+  result = placeholder
+}
+
+spindle mask(mask, i)::<res> {
+  res = if (mask == 0) then 0 else i}
+
+spindle recolor (i, target, new)::<res> {
+  res = if (i == target) then new else i
+}
