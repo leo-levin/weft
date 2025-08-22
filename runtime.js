@@ -430,6 +430,51 @@ const BuiltinSpindles = {
     const inst = makeSimpleInstance(instName, { rgb:(me,env)=>[toScalar(r(me,env)),toScalar(g(me,env)),toScalar(b(me,env))] });
     env.instances.set(instName,inst); return inst;
   },
+
+  map: (env, args, instName, outs) => {
+    const spindleName = (args[0] && args[0].type === "Str") ? args[0].v : "";
+    const spindleDef = env.spindles.get(spindleName);
+    
+    if (!spindleDef) {
+      throw new RuntimeError(`Unknown spindle '${spindleName}' in map`);
+    }
+
+    // Get array arguments - compile as expressions
+    const arrayExprs = args.slice(1).map(arg => compileExpr(arg, env));
+    
+    const inst = makeSimpleInstance(instName, {});
+    
+    // Create outputs - one for each element in the arrays
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : outs[i].name || outs[i].alias;
+      
+      inst.outs[outName] = (me, globalEnv) => {
+        // Evaluate all array arguments
+        const arrays = arrayExprs.map(expr => {
+          const result = expr(me, globalEnv);
+          return Array.isArray(result) ? result : [result];
+        });
+        
+        // Get the i-th element from each array
+        const elementArgs = arrays.map(arr => arr[i] || arr[0] || 0);
+        
+        // Create a proper call with the element arguments
+        const callWithArgs = { 
+          callee: spindleName, 
+          args: elementArgs.map(val => ({ type: 'Num', v: toScalar(val) }))
+        };
+        const evalFn = evalSpindleCall(callWithArgs, env);
+        const result = evalFn(me, globalEnv);
+        
+        // Return the first output of the mapped spindle
+        const firstOutput = spindleDef.outs[0];
+        return result[firstOutput] || 0;
+      };
+    }
+    
+    env.instances.set(instName, inst);
+    return inst;
+  },
 };
 const fallbackSampler = new Sampler(); fallbackSampler.fallbackPattern();
 

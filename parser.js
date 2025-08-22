@@ -65,6 +65,7 @@ Weft {
 
   Primary        = sym<"("> TupleInner sym<")">          --tuple
                  | sym<"("> Exp sym<")">                 --paren
+                 | Primary sym<"["> Exp sym<"]">          --index
                  | number
                  | string
                  | kwMe                                   --me

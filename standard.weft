@@ -14,3 +14,13 @@ spindle mask(mask, i)::<res> {
 spindle recolor (i, target, new)::<res> {
   res = if (i == target) then new else i
 }
+
+spindle rotate_2d(x,y,cx,cy,angle)::<rx,ry> {
+  let dx = x - cx
+  let dy = y - cy
+  let cos_a = cos(angle)
+  let sin_a = sin(angle)
+
+  rx = dx * cosA - dy * sinA + cx
+  ry = dx * sinA + dy * cosA + cy
+}

@@ -61,7 +61,14 @@ editor.addEventListener('input', ()=>{
   localStorage.setItem('weft_code', editor.value);
   if (!env.autorun) return;
   clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(()=> { runCode(); }, 400);
+  debounceTimer = setTimeout(()=> { 
+    // Use requestIdleCallback to avoid blocking typing
+    if (window.requestIdleCallback) {
+      requestIdleCallback(() => runCode(), { timeout: 1000 });
+    } else {
+      runCode(); 
+    }
+  }, 400);
 });
 
 document.getElementById('runBtn').addEventListener('click', runCode);
