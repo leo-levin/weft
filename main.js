@@ -106,6 +106,11 @@ fetch('./standard.weft')
   })
   .catch(e => console.warn('No standard library found:', e.message));
 
+function defaultCode() {
+  return `// Simple test case for the compiler
+display(sin(me.x * 10 + me.t), cos(me.y * 10 + me.t), 0.5)`;
+}
+
 const saved = localStorage.getItem('weft_code');
 if(saved){ editor.value = saved; } else { editor.value = defaultCode().trim(); }
 runCode();

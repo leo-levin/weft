@@ -11,6 +11,7 @@ function hash3(x,y,z){
   return s - Math.floor(s);
 }
 function smoothstep(a,b,x){ const t = clamp((x-a)/(b-a)); return t*t*(3-2*t); }
+// Original high-quality but slow noise
 function noise3(x,y,t){
   const xi = Math.floor(x), yi = Math.floor(y), ti = Math.floor(t);
   let xf = x - xi, yf = y - yi, tf = t - ti;
@@ -33,6 +34,7 @@ function noise3(x,y,t){
   return mix(y0,y1,w);
 }
 
+
 // ===== Runtime scaffolding =====
 class RuntimeError extends Error { constructor(msg){ super(msg); this.name = "RuntimeError"; } }
 
@@ -47,13 +49,14 @@ class Env {
     this.frame = 0;
     this.boot = performance.now();
     this.targetFps = 30;
-    this.resW = 80; this.resH = 80;
+    this.resW = 300; this.resH = 300;
     this.mediaCanvas = document.createElement('canvas');
     this.mediaCtx = this.mediaCanvas.getContext('2d', { willReadFrequently: true });
     this.mediaImageData = null;
   }
   time(){ return (performance.now() - this.boot) / 1000; }
 }
+Env.prototype.__noise3 = noise3;
 
 const Builtins = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan, atan2: Math.atan2,
@@ -135,7 +138,7 @@ function evalExprToStrand(node, env) {
 
     case "Me": {
       const field=node.field;
-      return { kind:'strand', evalAt(me, scope) {
+      return { kind:'strand', evalAt(me, _scope) {
         if(field==="x") return me.x;
         if(field==="y") return me.y;
         if(field==="t") return me.t;
@@ -148,7 +151,7 @@ function evalExprToStrand(node, env) {
 
     case "Mouse": {
       const field=node.field;
-      return { kind:'strand', evalAt(me, scope) {
+      return { kind:'strand', evalAt(_me, scope) {
         if(field==="x") return scope.mouse.x;
         if(field==="y") return scope.mouse.y;
         throw new RuntimeError(`Invalid mouse@${field}`);
@@ -237,7 +240,7 @@ function readSlot(slot) {
 }
 
 function ConstantStrand(value) {
-  return { kind: 'strand', evalAt(me, env) { return value; } };
+  return { kind: 'strand', evalAt(_me, _env) { return value; } };
 }
 
 function coerceToStrand(valueOrStrand) {
@@ -247,6 +250,229 @@ function coerceToStrand(valueOrStrand) {
   throw new RuntimeError('Expected strand/number/slot');
 }
 
+// ===== HIGH-PERFORMANCE WEFT COMPILER =====
+
+// Ultra-fast cache using WeakMap for object identity + Map for primitives
+const nodeIdCache = new WeakMap();
+let nodeIdCounter = 0;
+const compiledFunctionCache = new Map();
+
+// Generate fast cache key without JSON.stringify
+function getNodeId(node) {
+  if (typeof node === 'object' && node !== null) {
+    if (!nodeIdCache.has(node)) {
+      nodeIdCache.set(node, `obj_${nodeIdCounter++}`);
+    }
+    return nodeIdCache.get(node);
+  }
+  return String(node);
+}
+
+// Pre-resolved builtin function mappings for maximum speed
+const BUILTIN_JS_MAP = {
+  sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan',
+  sqrt: 'Math.sqrt', abs: 'Math.abs', exp: 'Math.exp', log: 'Math.log',
+  min: 'Math.min', max: 'Math.max', floor: 'Math.floor', ceil: 'Math.ceil',
+  round: 'Math.round', atan2: 'Math.atan2'
+};
+
+// Ultra-optimized compiler - no string building, direct code generation
+function compileWeftFast(node, env, resolvedVars = new Map()) {
+  if (Array.isArray(node)) {
+    return node.length === 1 ? compileWeftFast(node[0], env, resolvedVars) : '0';
+  }
+
+  switch(node.type) {
+    case "Num": return String(node.v);
+    case "Str": return `"${node.v.replace(/"/g, '\\"')}"`;
+
+    case "Me": {
+      const field = node.field;
+      return field === "x" ? "x" : field === "y" ? "y" : field === "t" ? "t" :
+             field === "frames" ? "f" : field === "width" ? "w" : field === "height" ? "h" : "0";
+    }
+
+    case "Mouse": {
+      return node.field === "x" ? "mx" : node.field === "y" ? "my" : "0";
+    }
+
+    case "Unary": {
+      const arg = compileWeftFast(node.expr, env, resolvedVars);
+      return node.op === "NOT" ? `(${arg}?0:1)` : node.op === "-" ? `(-${arg})` :
+             BUILTIN_JS_MAP[node.op] ? `${BUILTIN_JS_MAP[node.op]}(${arg})` : `(-${arg})`;
+    }
+
+    case "Bin": {
+      const left = compileWeftFast(node.left, env, resolvedVars);
+      const right = compileWeftFast(node.right, env, resolvedVars);
+      const op = node.op;
+
+      if (op === "+") return `(${left}+${right})`;
+      if (op === "-") return `(${left}-${right})`;
+      if (op === "*") return `(${left}*${right})`;
+      if (op === "/") return `(${left}/(${right}||1e-9))`;
+      if (op === "^") return `Math.pow(${left},${right})`;
+      if (op === "%") return `((${left}%${right}+${right})%${right})`;
+      if (op === "==") return `(${left}===${right}?1:0)`;
+      if (op === "!=") return `(${left}!==${right}?1:0)`;
+      if (op === "<") return `(${left}<${right}?1:0)`;
+      if (op === ">") return `(${left}>${right}?1:0)`;
+      if (op === "<=") return `(${left}<=${right}?1:0)`;
+      if (op === ">=") return `(${left}>=${right}?1:0)`;
+      if (op === "AND") return `(${left}&&${right}?1:0)`;
+      if (op === "OR") return `(${left}||${right}?1:0)`;
+      return "0";
+    }
+
+    case "If": {
+      const cond = compileWeftFast(node.cond, env, resolvedVars);
+      const thenExpr = compileWeftFast(node.t, env, resolvedVars);
+      const elseExpr = compileWeftFast(node.e, env, resolvedVars);
+      return `(${cond}?${thenExpr}:${elseExpr})`;
+    }
+
+    case "Call": {
+      const name = node.name;
+      const args = node.args.map(arg => compileWeftFast(arg, env, resolvedVars));
+
+      if (BUILTIN_JS_MAP[name]) {
+        return `${BUILTIN_JS_MAP[name]}(${args.join(',')})`;
+      }
+
+      // Optimized built-in functions
+      if (name === "clamp" && args.length === 3) {
+        return `Math.min(${args[2]},Math.max(${args[1]},${args[0]}))`;
+      }
+      if (name === "distance" && args.length === 4) {
+        return `Math.hypot(${args[0]}-${args[2]},${args[1]}-${args[3]})`;
+      }
+      if (name === "noise" && args.length >= 3) {
+        return `env.__noise3(${args[0]}*3.1,${args[1]}*3.1,${args[2]}*0.5)`;
+      }
+      if (name === "length") {
+        return `Math.hypot(${args.join(',')})`;
+      }
+      if (name === "normalize" && args.length === 3) {
+        return `((${args[0]})-(${args[1]}))/((${args[2]})-(${args[1]})||1e-9)`;
+      }
+
+      return `${BUILTIN_JS_MAP[name] || 'Math.sin'}(${args.join(',')})`;
+    }
+
+    case "Var": {
+      // Try to resolve variable at compile time
+      const varName = node.name;
+      if (resolvedVars.has(varName)) {
+        return resolvedVars.get(varName);
+      }
+      // Fall back to runtime lookup (slower)
+      return `getVar("${varName}")`;
+    }
+
+    case "StrandAccess": {
+      // Pre-compile instance access where possible
+      const base = node.base;
+      const out = node.out;
+      return `getInstance("${base}","${out}")`;
+    }
+
+    default: return "0";
+  }
+}
+
+// Pre-compile function with ultra-optimized parameter list
+function createOptimizedFunction(jsCode, hasVars = false, hasInstances = false) {
+  let paramList = 'x,y,t,f,w,h,mx,my';
+  let fnBody = `return ${jsCode};`;
+
+  if (hasVars) {
+    paramList += ',getVar';
+    fnBody = `function getVar(name){
+      if(env.__scopeStack){
+        for(let i=env.__scopeStack.length-1;i>=0;i--){
+          const s=env.__scopeStack[i];
+          if(s && name in s) {
+            const val = s[name];
+            // Handle strand values
+            if(val && val.__kind === "strand" && val.eval) return val.eval();
+            if(typeof val === 'function') return val(me, env);
+            return val;
+          }
+        }
+      }
+      return 0;
+    }
+    ${fnBody}`;
+  }
+
+  if (hasInstances) {
+    paramList += ',getInstance';
+    fnBody = `function getInstance(base,out){
+      const inst=env.instances.get(base);
+      if(!inst) return 0;
+      const strand=inst.outs[out];
+      if(!strand) return 0;
+      // Properly evaluate the strand
+      if(typeof strand==='function') return strand(me,env);
+      if(strand && strand.kind === 'strand' && strand.evalAt) return strand.evalAt(me,env);
+      return strand;
+    }
+    ${fnBody}`;
+  }
+
+  try {
+    return new Function(`me,env,${paramList}`, fnBody);
+  } catch(e) {
+    console.warn('Function compilation failed:', e);
+    return null;
+  }
+}
+
+// Main optimized compiler with aggressive caching
+function compileWeftOptimized(node, env) {
+  const nodeId = getNodeId(node);
+
+  if (compiledFunctionCache.has(nodeId)) {
+    return compiledFunctionCache.get(nodeId);
+  }
+
+  // Compile to lean JavaScript
+  const jsCode = compileWeftFast(node, env);
+  const hasVars = jsCode.includes('getVar');
+  const hasInstances = jsCode.includes('getInstance');
+
+  // Create ultra-optimized function
+  const compiledFn = createOptimizedFunction(jsCode, hasVars, hasInstances);
+
+  if (compiledFn) {
+    // Wrap with parameter injection for maximum speed
+    const optimizedWrapper = (me, env) => {
+      return compiledFn(me, env, me.x, me.y, me.t, me.frames, me.width, me.height,
+                       env.mouse.x, env.mouse.y);
+    };
+
+    compiledFunctionCache.set(nodeId, optimizedWrapper);
+    return optimizedWrapper;
+  }
+
+  // Ultimate fallback
+  console.warn('Using slow interpreter fallback');
+  const strand = evalExprToStrand(node, env);
+  const fallbackFn = (me, env) => strand.evalAt(me, env);
+  compiledFunctionCache.set(nodeId, fallbackFn);
+  return fallbackFn;
+}
+
+// Alias for compatibility
+function compileExprOptimized(node, envRef) {
+  return compileWeftOptimized(node, envRef);
+}
+
+// Clear only when absolutely necessary
+function clearCompilationCaches() {
+  compiledFunctionCache.clear();
+  nodeIdCounter = 0;
+}
 // Pointwise operations over strands
 function map1(a, f) {
   return { kind:'strand', evalAt(me, env){ return f(a.evalAt(me, env)); } };
@@ -324,10 +550,10 @@ class Sampler {
 }
 
 const BuiltinSpindles = {
-  load: (env, args, instName, outs) => {
+  load: (env, args, instName, _outs) => {
     const path = (args[0] && args[0].type==="Str") ? args[0].v : "";
-    const xExpr = args[1] ? compileExpr(args[1], env) : null;
-    const yExpr = args[2] ? compileExpr(args[2], env) : null;
+    const xExpr = args[1] ? compileExprOptimized(args[1], env) : null;
+    const yExpr = args[2] ? compileExprOptimized(args[2], env) : null;
 
     const sampler = new Sampler(); sampler.load(path);
     if(sampler.kind!=="none") env.defaultSampler = sampler;
@@ -353,8 +579,8 @@ const BuiltinSpindles = {
         const y = yExpr ? toScalar(yExpr(me, env)) : me.y;
         return (env.defaultSampler||sampler).sample(x, y)[3];
       },
-      left:(me)=> env.audio.intensity,
-      right:(me)=> env.audio.intensity,
+      left:(_me)=> env.audio.intensity,
+      right:(_me)=> env.audio.intensity,
     });
     // Store the sampler in the instance so sample() can access it
     inst.sampler = sampler;
@@ -363,7 +589,7 @@ const BuiltinSpindles = {
       const el = new Audio(path); el.loop=true; el.crossOrigin="anonymous";
       env.audio.element = el;
       try {
-        const ctx = new (window.AudioContext||window.webkitAudioContext)();
+        const ctx = new (window.AudioContext||window['webkitAudioContext'])();
         const src = ctx.createMediaElementSource(el);
         const analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
         src.connect(analyser); analyser.connect(ctx.destination);
@@ -374,11 +600,11 @@ const BuiltinSpindles = {
     return inst;
   },
 
-  sample: (env, args, instName, outs) => {
+  sample: (env, args, instName, _outs) => {
     // sample(imageInstance, x, y) - sample a specific loaded image at custom coordinates
     const imageInstanceName = (args[0] && args[0].type === "Var") ? args[0].name : null;
-    const xExpr = compileExpr(args[1], env);
-    const yExpr = compileExpr(args[2], env);
+    const xExpr = compileExprOptimized(args[1], env);
+    const yExpr = compileExprOptimized(args[2], env);
 
     const inst = makeSimpleInstance(instName, {
       r: (me, env) => {
@@ -414,8 +640,8 @@ const BuiltinSpindles = {
     return inst;
   },
 
-  video: (env, args, instName, outs)=>{
-    const xf = compileExpr(args[0], env), yf = compileExpr(args[1], env);
+  video: (env, args, instName, _outs)=>{
+    const xf = compileExprOptimized(args[0], env), yf = compileExprOptimized(args[1], env);
     const inst = makeSimpleInstance(instName, {
       r:(me,env)=> (env.defaultSampler||fallbackSampler).sample(toScalar(xf(me,env)), toScalar(yf(me,env)))[0],
       g:(me,env)=> (env.defaultSampler||fallbackSampler).sample(toScalar(xf(me,env)), toScalar(yf(me,env)))[1],
@@ -425,8 +651,8 @@ const BuiltinSpindles = {
     env.instances.set(instName, inst);
     return inst;
   },
-  compose: (env,args,instName,outs)=>{
-    const r=compileExpr(args[0],env), g=compileExpr(args[1],env), b=compileExpr(args[2],env);
+  compose: (env,args,instName,_outs)=>{
+    const r=compileExprOptimized(args[0],env), g=compileExprOptimized(args[1],env), b=compileExprOptimized(args[2],env);
     const inst = makeSimpleInstance(instName, { rgb:(me,env)=>[toScalar(r(me,env)),toScalar(g(me,env)),toScalar(b(me,env))] });
     env.instances.set(instName,inst); return inst;
   },
@@ -434,44 +660,82 @@ const BuiltinSpindles = {
   map: (env, args, instName, outs) => {
     const spindleName = (args[0] && args[0].type === "Str") ? args[0].v : "";
     const spindleDef = env.spindles.get(spindleName);
-    
+
     if (!spindleDef) {
       throw new RuntimeError(`Unknown spindle '${spindleName}' in map`);
     }
 
     // Get array arguments - compile as expressions
-    const arrayExprs = args.slice(1).map(arg => compileExpr(arg, env));
-    
+    const arrayExprs = args.slice(1).map(arg => compileExprOptimized(arg, env));
+
     const inst = makeSimpleInstance(instName, {});
-    
+
     // Create outputs - one for each element in the arrays
     for (let i = 0; i < outs.length; i++) {
       const outName = typeof outs[i] === 'string' ? outs[i] : outs[i].name || outs[i].alias;
-      
+
       inst.outs[outName] = (me, globalEnv) => {
         // Evaluate all array arguments
         const arrays = arrayExprs.map(expr => {
           const result = expr(me, globalEnv);
           return Array.isArray(result) ? result : [result];
         });
-        
+
         // Get the i-th element from each array
         const elementArgs = arrays.map(arr => arr[i] || arr[0] || 0);
-        
+
         // Create a proper call with the element arguments
-        const callWithArgs = { 
-          callee: spindleName, 
+        const callWithArgs = {
+          callee: spindleName,
           args: elementArgs.map(val => ({ type: 'Num', v: toScalar(val) }))
         };
         const evalFn = evalSpindleCall(callWithArgs, env);
         const result = evalFn(me, globalEnv);
-        
+
         // Return the first output of the mapped spindle
         const firstOutput = spindleDef.outs[0];
         return result[firstOutput] || 0;
       };
     }
-    
+
+    env.instances.set(instName, inst);
+    return inst;
+  },
+
+  noise: (env, args, instName) => {
+    // Use compiled expressions for performance
+    const xExpr = args[0] ? compileExprOptimized(args[0], env) : (me) => me.x;
+    const yExpr = args[1] ? compileExprOptimized(args[1], env) : (me) => me.y;
+    const tExpr = args[2] ? compileExprOptimized(args[2], env) : (me) => me.t;
+    const ampExpr = args[3] ? compileExprOptimized(args[3], env) : () => 1;
+    const periodExpr = args[4] ? compileExprOptimized(args[4], env) : () => 1;
+    const harmonicsExpr = args[5] ? compileExprOptimized(args[5], env) : () => 3;
+
+    const inst = makeSimpleInstance(instName, {
+      out: (me, env) => {
+        const x = xExpr(me, env);
+        const y = yExpr(me, env);
+        const t = tExpr(me, env);
+        const amp = ampExpr(me, env);
+        const period = Math.max(0.001, periodExpr(me, env));
+        const harmonics = Math.max(1, Math.floor(harmonicsExpr(me, env)));
+        const freq = 1.0 / period;
+
+        if (harmonics === 1) {
+          return noise3(x * freq, y * freq, t * freq) * amp;
+        }
+
+        let result = 0, maxValue = 0, f = freq, a = amp;
+        for (let i = 0; i < harmonics; i++) {
+          result += noise3(x * f, y * f, t * f) * a;
+          maxValue += a;
+          f *= 2.0;
+          a *= 0.5;
+        }
+        return maxValue > 0 ? result / maxValue : 0;
+      }
+    });
+
     env.instances.set(instName, inst);
     return inst;
   },
@@ -541,13 +805,13 @@ function evalSpindleCall(call, outerEnv) {
 
 function execStmtWithScope(stmt, me, env, localScope) {
   if (stmt.type === "Let") {
-    const value = compileExpr(stmt.expr, env)(me, env);
+    const value = compileExprOptimized(stmt.expr, env)(me, env);
     localScope[stmt.name] = value;
     return;
   }
 
   if (stmt.type === "Assign") {
-    const rhs = compileExpr(stmt.expr, env)(me, env);
+    const rhs = compileExprOptimized(stmt.expr, env)(me, env);
     const cur = localScope[stmt.name] ?? 0;
 
 
@@ -561,8 +825,8 @@ function execStmtWithScope(stmt, me, env, localScope) {
   }
 
   if (stmt.type === "For") {
-    const start = Math.floor(compileExpr(stmt.start, env)(me, env));
-    const end = Math.floor(compileExpr(stmt.end, env)(me, env));
+    const start = Math.floor(compileExprOptimized(stmt.start, env)(me, env));
+    const end = Math.floor(compileExprOptimized(stmt.end, env)(me, env));
     const inc = start <= end ? 1 : -1;
 
     for (let v = start; inc > 0 ? v <= end : v >= end; v += inc) {
@@ -594,7 +858,7 @@ function compileSpindleBody(astBody, paramNames, outNames, argExprs, outerEnv){
 // Program executor
 class Executor {
   constructor(env){ this.env = env; this.ast = null; }
-  
+
   loadStandardLibrary() {
     // Load standard library spindles if available
     if (window.StandardLibraryCode && window.Parser) {
@@ -616,6 +880,9 @@ class Executor {
     this.env.instances.clear();
     this.env.displayFns = null;
 
+    // Clear compilation caches on new program run
+    clearCompilationCaches();
+
     // Load standard library spindles first
     this.loadStandardLibrary();
 
@@ -625,7 +892,7 @@ class Executor {
     for(const s of ast.body){
       if(s.type==="SpindleDef") continue;
       if(s.type==="Direct"){
-        const fx = compileExpr(s.expr, this.env);
+        const fx = compileExprOptimized(s.expr, this.env);
         let existingInst = this.env.instances.get(s.name);
         const outs = existingInst ? {...existingInst.outs} : {};
         if(s.outs.length===1){
@@ -718,9 +985,9 @@ class Executor {
           }
         } else if(s.args.length === 3) {
           // Original 3-argument behavior
-          fr = compileExpr(s.args[0], this.env);
-          fg = compileExpr(s.args[1], this.env);
-          fb = compileExpr(s.args[2], this.env);
+          fr = compileExprOptimized(s.args[0], this.env);
+          fg = compileExprOptimized(s.args[1], this.env);
+          fb = compileExprOptimized(s.args[2], this.env);
         } else {
           throw new RuntimeError("display needs either 1 instance with 3 outputs or 3 expressions (r,g,b)");
         }
@@ -730,7 +997,7 @@ class Executor {
       }
       if(s.type==="EnvStmt"){
         if(s.field === "frames") {
-          const valueExpr = compileExpr(s.expr, this.env);
+          const valueExpr = compileExprOptimized(s.expr, this.env);
           // Evaluate the expression to get the target fps
           const fps = toScalar(valueExpr({}, this.env));
           this.env.targetFps = Math.max(1, Math.min(120, fps)); // Clamp between 1-120 fps

@@ -24,3 +24,15 @@ spindle rotate_2d(x,y,cx,cy,angle)::<rx,ry> {
   rx = dx * cosA - dy * sinA + cx
   ry = dx * sinA + dy * cosA + cy
 }
+
+spindle circle(x,y,cx,cy,rad)::<res> {
+let dist = sqrt((x-cx)^2 + (y-cy)^2)
+res = if(dist < rad) then 1 else 0
+}
+
+
+spindle recolor3 (i1, i2,i3, target1, target2, target3, new1,new2,new3)::<r, g, b > {
+  r = if (i1 == target1) then new1 else i1
+  g = if (i2 == target2) then new2 else i2
+  b = if (i3 == target3) then new3 else i3
+}
