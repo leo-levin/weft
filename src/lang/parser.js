@@ -1,4 +1,10 @@
 (() => {
+  // Import ASTNode classes
+  const {
+    ASTNode, BinaryExpr, UnaryExpr, CallExpr, VarExpr, NumExpr, StrExpr,
+    MeExpr, MouseExpr, TupleExpr, IndexExpr, StrandAccessExpr, IfExpr,
+    LetBinding, Assignment, DisplayStmt, SpindleDef, InstanceBinding, Program
+  } = typeof window !== 'undefined' ? window.ASTNodes : require('../ast/ast-node.js');
   const externalEl = typeof document !== 'undefined' && document.getElementById('weft-grammar');
   const externalSrc = externalEl ? externalEl.textContent : null;
 
