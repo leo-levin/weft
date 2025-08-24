@@ -19,14 +19,43 @@
       <span class="pill" id="perfPill">Frame: — ms</span>
       <span class="pill" id="resPill">Res: 360×202</span>
     </div>
-    <textarea id="editor" spellcheck="false"></textarea>
-    <div id="help">
-      <div><strong>Notes</strong>: CPU renderer for clarity. Keep resolutions modest for smooth frames. Use <code>Start Media</code> once to allow audio/video playback.</div>
-      <div>Built-ins: <code>sin cos tan atan2 sqrt abs exp log min max clamp floor ceil round distance length</code>, <code>noise</code>.</div>
-      <div>Spindles: <code>load</code>, <code>sample</code>, <code>video</code> (samples last loaded image/video), <code>analyze_volume</code>, <code>kaleidoscope</code>, <code>compose</code>, <code>ripple</code>.</div>
-      <div>Coords: <code>me.x me.y me.t me.frames me.width me.height</code>; Mouse: <code>mouse@x mouse@y</code>.</div>
+    <div id="editorContainer">
+      <div id="syntaxHighlight"></div>
+      <textarea id="editor" spellcheck="false"></textarea>
     </div>
     <div id="errors"></div>
+    <div id="debugPanel" class="collapsed">
+      <div id="debugResizeHandle"></div>
+      <div id="debugHeader">
+        <span>Debug Info</span>
+        <button id="debugToggle">Show</button>
+        <button id="debugClear">Clear</button>
+      </div>
+      <div id="debugContent">
+        <div id="debugTabs">
+          <button class="debug-tab active" data-tab="logs">Logs</button>
+          <button class="debug-tab" data-tab="scope">Scope</button>
+          <button class="debug-tab" data-tab="instances">Instances</button>
+        </div>
+        <div id="debugTabContent">
+          <div id="logsTab" class="debug-tab-pane active">
+            <div id="logFilters">
+              <label><input type="checkbox" id="filterDebug" checked> DEBUG</label>
+              <label><input type="checkbox" id="filterInfo" checked> INFO</label>
+              <label><input type="checkbox" id="filterWarn" checked> WARN</label>
+              <label><input type="checkbox" id="filterError" checked> ERROR</label>
+            </div>
+            <div id="logOutput"></div>
+          </div>
+          <div id="scopeTab" class="debug-tab-pane">
+            <div id="scopeViewer"></div>
+          </div>
+          <div id="instancesTab" class="debug-tab-pane">
+            <div id="instanceViewer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   <div id="right">
     <div id="canvasWrap">
@@ -38,11 +67,12 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js" defer></script>
-<script src="parser.js" defer></script>
-<script src="runtime.js" defer></script>
-<script src="renderer.js" defer></script>
-<script src="examples.js" defer></script>
-<script src="main.js" defer></script>
+<script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js"></script>
+<script src="parser.js"></script>
+<script src="runtime.js"></script>
+<script src="renderer.js"></script>
+<script src="webgl-renderer.js"></script>
+<script src="simple-highlighter.js"></script>
+<script src="main.js"></script>
 </body>
 </html>

@@ -1,4 +1,3 @@
-
 (() => {
   const externalEl = typeof document !== 'undefined' && document.getElementById('weft-grammar');
   const externalSrc = externalEl ? externalEl.textContent : null;
@@ -121,7 +120,14 @@ Weft {
       const items = [first.sourceString.trim()];
       if (rest && rest.children) {
         rest.children.forEach(item => {
-          items.push(item.ast());
+          // Extract parameter name from the AST structure
+          if (item.sourceString) {
+            items.push(item.sourceString.trim());
+          } else if (item.children && item.children[1] && item.children[1].sourceString) {
+            items.push(item.children[1].sourceString.trim());
+          } else if (item.children && item.children[0] && item.children[0].sourceString) {
+            items.push(item.children[0].sourceString.trim());
+          }
         });
       }
       return items;

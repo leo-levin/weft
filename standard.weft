@@ -21,8 +21,8 @@ spindle rotate_2d(x,y,cx,cy,angle)::<rx,ry> {
   let cos_a = cos(angle)
   let sin_a = sin(angle)
 
-  rx = dx * cosA - dy * sinA + cx
-  ry = dx * sinA + dy * cosA + cy
+  rx = dx * cos_a - dy * sin_a + cx
+  ry = dx * sin_a + dy * cos_a + cy
 }
 
 spindle circle(x,y,cx,cy,rad)::<res> {

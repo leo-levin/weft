@@ -1,0 +1,932 @@
+// WebGL Renderer with WEFT-to-GLSL compiler for GPU acceleration
+
+class WebGLRenderer {
+  constructor(canvas, env) {
+    this.canvas = canvas;
+    this.env = env;
+    this.gl = null;
+    this.program = null;
+    this.uniforms = {};
+    this.textures = new Map();
+    this.textureUnits = [];
+    this.textureCounter = 0;
+    this.frameBuffer = null;
+    this.running = false;
+    this.frames = 0;
+    this.lastTime = performance.now();
+    this.fps = 0;
+    
+    this.initWebGL();
+  }
+
+  initWebGL() {
+    // Try to get WebGL context, but preserve 2D context capability
+    this.gl = this.canvas.getContext('webgl2', { preserveDrawingBuffer: true }) || 
+              this.canvas.getContext('webgl', { preserveDrawingBuffer: true });
+    if (!this.gl) {
+      console.error('WebGL not supported, falling back to CPU renderer');
+      return false;
+    }
+    
+    // Check WebGL limits
+    const maxViewportDims = this.gl.getParameter(this.gl.MAX_VIEWPORT_DIMS);
+    const maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
+    console.log(`WebGL limits - Max viewport: ${maxViewportDims[0]}x${maxViewportDims[1]}, Max texture: ${maxTextureSize}`);
+    
+    this.maxWidth = maxViewportDims[0];
+    this.maxHeight = maxViewportDims[1];
+    
+    // Setup basic quad geometry
+    const vertices = new Float32Array([
+      -1, -1,  1, -1,  -1, 1,
+      -1,  1,  1, -1,   1, 1
+    ]);
+    
+    const buffer = this.gl.createBuffer();
+    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
+    this.gl.bufferData(this.gl.ARRAY_BUFFER, vertices, this.gl.STATIC_DRAW);
+    
+    return true;
+  }
+
+  loadTexture(url, instName) {
+    if (this.textures.has(instName)) {
+      return this.textures.get(instName);
+    }
+
+    const gl = this.gl;
+    const texture = gl.createTexture();
+    const textureUnit = this.textureCounter++;
+    
+    gl.activeTexture(gl.TEXTURE0 + textureUnit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    
+    // Create 1x1 pixel placeholder
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([128, 128, 128, 255]));
+    
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => {
+      gl.activeTexture(gl.TEXTURE0 + textureUnit);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      console.log(`Loaded texture: ${url} on unit ${textureUnit}`);
+    };
+    image.onerror = () => {
+      console.error(`Failed to load texture: ${url}`);
+    };
+    image.src = url;
+    
+    const textureInfo = {
+      texture,
+      unit: textureUnit,
+      uniformName: `u_texture${textureUnit}`,
+      loaded: false
+    };
+    
+    this.textures.set(instName, textureInfo);
+    return textureInfo;
+  }
+
+  compileShader(type, source) {
+    const gl = this.gl;
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    
+    return shader;
+  }
+
+  createProgram(vertexSource, fragmentSource) {
+    const gl = this.gl;
+    const vertexShader = this.compileShader(gl.VERTEX_SHADER, vertexSource);
+    const fragmentShader = this.compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+    
+    if (!vertexShader || !fragmentShader) return null;
+    
+    const program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.error('Program link error:', gl.getProgramInfoLog(program));
+      return null;
+    }
+    
+    return program;
+  }
+
+  // Convert WEFT AST to GLSL code with full support
+  compileToGLSL(node, env, instanceOutputs = {}) {
+    if (Array.isArray(node)) {
+      return node.length === 1 ? this.compileToGLSL(node[0], env, instanceOutputs) : '0.0';
+    }
+
+    switch(node.type) {
+      case 'Num': 
+        return node.v.toString() + (Number.isInteger(node.v) ? '.0' : '');
+        
+      case 'Me':
+        switch(node.field) {
+          case 'x': return 'uv.x';
+          case 'y': return 'uv.y';
+          case 't': return 'u_time';
+          case 'frames': return 'u_frames';
+          case 'width': return 'u_resolution.x';
+          case 'height': return 'u_resolution.y';
+          default: return '0.0';
+        }
+        
+      case 'Mouse':
+        return node.field === 'x' ? 'u_mouse.x' : 
+               node.field === 'y' ? 'u_mouse.y' : '0.0';
+        
+      case 'Unary':
+        const arg = this.compileToGLSL(node.expr, env, instanceOutputs);
+        if (node.op === 'NOT') return `(${arg} > 0.0 ? 0.0 : 1.0)`;
+        if (node.op === '-') return `(-${arg})`;
+        return arg;
+        
+      case 'Bin': {
+        const left = this.compileToGLSL(node.left, env, instanceOutputs);
+        const right = this.compileToGLSL(node.right, env, instanceOutputs);
+        
+        switch(node.op) {
+          case '+': return `(${left} + ${right})`;
+          case '-': return `(${left} - ${right})`;
+          case '*': return `(${left} * ${right})`;
+          case '/': return `(${left} / max(${right}, 0.000001))`;
+          case '^': return `pow(${left}, ${right})`;
+          case '%': return `mod(${left}, ${right})`;
+          case '==': case '===': return `(${left} == ${right} ? 1.0 : 0.0)`;
+          case '!=': return `(${left} != ${right} ? 1.0 : 0.0)`;
+          case '<': return `(${left} < ${right} ? 1.0 : 0.0)`;
+          case '>': return `(${left} > ${right} ? 1.0 : 0.0)`;
+          case '<=': return `(${left} <= ${right} ? 1.0 : 0.0)`;
+          case '>=': return `(${left} >= ${right} ? 1.0 : 0.0)`;
+          case 'AND': return `(${left} > 0.0 && ${right} > 0.0 ? 1.0 : 0.0)`;
+          case 'OR': return `(${left} > 0.0 || ${right} > 0.0 ? 1.0 : 0.0)`;
+          default: return '0.0';
+        }
+      }
+        
+      case 'If': {
+        const cond = this.compileToGLSL(node.cond, env, instanceOutputs);
+        const thenExpr = this.compileToGLSL(node.t, env, instanceOutputs);
+        const elseExpr = this.compileToGLSL(node.e, env, instanceOutputs);
+        return `(${cond} > 0.0 ? ${thenExpr} : ${elseExpr})`;
+      }
+        
+      case 'Call': {
+        const args = node.args.map(arg => this.compileToGLSL(arg, env, instanceOutputs));
+        const name = node.name;
+        
+        // Map WEFT functions to GLSL
+        switch(name) {
+          case 'sin': return `sin(${args[0]})`;
+          case 'cos': return `cos(${args[0]})`;
+          case 'tan': return `tan(${args[0]})`;
+          case 'sqrt': return `sqrt(${args[0]})`;
+          case 'abs': return `abs(${args[0]})`;
+          case 'exp': return `exp(${args[0]})`;
+          case 'log': return `log(${args[0]})`;
+          case 'min': return `min(${args.join(', ')})`;
+          case 'max': return `max(${args.join(', ')})`;
+          case 'floor': return `floor(${args[0]})`;
+          case 'ceil': return `ceil(${args[0]})`;
+          case 'round': return `floor(${args[0]} + 0.5)`;
+          case 'atan2': return `atan(${args[0]}, ${args[1]})`;
+          case 'clamp': 
+            return args.length === 3 ? 
+              `clamp(${args[0]}, ${args[1]}, ${args[2]})` :
+              `clamp(${args[0]}, 0.0, 1.0)`;
+          case 'length':
+            return args.length === 2 ? 
+              `length(vec2(${args[0]}, ${args[1]}))` :
+              `abs(${args[0]})`;
+          case 'distance':
+            return args.length === 4 ?
+              `distance(vec2(${args[0]}, ${args[1]}), vec2(${args[2]}, ${args[3]}))` :
+              '0.0';
+          case 'normalize':
+            return args.length === 3 ?
+              `((${args[0]} - ${args[1]}) / max(${args[2]} - ${args[1]}, 0.000001))` :
+              args[0];
+          case 'noise':
+            return args.length >= 3 ?
+              `noise3(${args[0]} * 3.1, ${args[1]} * 3.1, ${args[2]} * 0.5)` :
+              '0.0';
+          default:
+            return '0.0';
+        }
+      }
+        
+      case 'StrandAccess': {
+        // Handle instance@output access
+        const key = `${node.base}@${node.out}`;
+        if (instanceOutputs[key]) {
+          return instanceOutputs[key];
+        }
+        return '0.0';
+      }
+        
+      case 'Var': {
+        // Handle variables - check if it's a computed variable or parameter
+        if (instanceOutputs[node.name]) {
+          return instanceOutputs[node.name];
+        }
+        // If it's a direct variable reference (like parameters), use the name directly
+        return node.name;
+      }
+        
+      default:
+        return '0.0';
+    }
+  }
+
+  generateFragmentShader() {
+    // Parse the full program and compile to GLSL
+    const program = this.env.currentProgram;
+    if (!program) {
+      logger.error('WebGL', 'No program AST available');
+      return null;
+    }
+
+    const displayStmt = this.env.displayAst;
+    if (!displayStmt) {
+      logger.error('WebGL', 'No display statement found');
+      return null;
+    }
+
+    logger.info('WebGL', 'Generating fragment shader');
+
+    // Collect all instances and their definitions
+    const instanceOutputs = {};
+    const glslCode = [];
+    
+    // Collect and generate GLSL functions for user-defined spindles
+    const spindleFunctions = [];
+    for (const [spindleName, spindleDef] of this.env.spindles) {
+      if (this.canCompileSpindleToGLSL(spindleDef)) {
+        logger.info('WebGL', `Generating GLSL function for spindle: ${spindleName}`);
+        const glslFunction = this.generateSpindleGLSL(spindleDef);
+        spindleFunctions.push(glslFunction);
+      } else {
+        logger.debug('WebGL', `Spindle '${spindleName}' cannot be compiled to GLSL`);
+      }
+    }
+    
+    // Process Direct statements (variable definitions)
+    for (const stmt of program.body) {
+      if (stmt.type === 'Direct') {
+        logger.debug('WebGL', `Processing Direct: ${stmt.name}`, { outputs: stmt.outs });
+        
+        for (let i = 0; i < stmt.outs.length; i++) {
+          const outputName = stmt.outs[i];
+          const varName = `${stmt.name}_${outputName}`;
+          const glslExpr = this.compileToGLSL(stmt.expr, this.env, instanceOutputs);
+          
+          if (stmt.outs.length === 1) {
+            glslCode.push(`  float ${varName} = ${glslExpr};`);
+            instanceOutputs[`${stmt.name}@${outputName}`] = varName;
+            instanceOutputs[stmt.name] = varName; // Also allow direct access
+          } else {
+            // Handle tuple outputs - need better approach for this
+            glslCode.push(`  float ${varName} = ${glslExpr};`);
+            instanceOutputs[`${stmt.name}@${outputName}`] = varName;
+          }
+          
+          logger.debug('WebGL', `Direct output: ${varName} = ${glslExpr}`);
+        }
+      }
+      
+      // Handle image/media loading
+      if (stmt.type === 'CallInstance' && stmt.callee === 'load') {
+        const imagePath = stmt.args[0] && stmt.args[0].type === 'Str' ? stmt.args[0].v : null;
+        if (imagePath) {
+          const textureInfo = this.loadTexture(imagePath, stmt.inst);
+          logger.info('WebGL', `Processing load instance: ${stmt.inst}`, { path: imagePath, outputs: stmt.outs });
+          
+          for (const output of stmt.outs) {
+            const outName = typeof output === 'string' ? output : (output.name || output.alias);
+            const varName = `${stmt.inst}_${outName}`;
+            
+            // Map output names to texture components more flexibly
+            let component = '.r'; // default to red
+            if (outName === 'r' || outName === 'red') component = '.r';
+            else if (outName === 'g' || outName === 'green') component = '.g';
+            else if (outName === 'b' || outName === 'blue') component = '.b';
+            else if (outName === 'a' || outName === 'alpha') component = '.a';
+            else {
+              // For arbitrary names, use position-based mapping
+              const outputIndex = stmt.outs.indexOf(output);
+              component = ['.r', '.g', '.b', '.a'][Math.min(outputIndex, 3)];
+            }
+            
+            glslCode.push(`  float ${varName} = texture2D(${textureInfo.uniformName}, uv)${component};`);
+            instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+            logger.debug('WebGL', `Texture output: ${varName} → ${component}`);
+          }
+        }
+      }
+      
+      // Handle general spindle calls - try to compile common ones to GLSL
+      if (stmt.type === 'CallInstance' && stmt.callee !== 'load') {
+        this.compileSpindleToGLSL(stmt, glslCode, instanceOutputs);
+      }
+    }
+    
+    // Compile display statement
+    let rCode = '0.0', gCode = '0.0', bCode = '0.0';
+    
+    if (displayStmt.args.length === 1) {
+      // Single argument - try to get first 3 outputs from the instance
+      const arg = displayStmt.args[0];
+      if (arg.type === 'Var') {
+        const instName = arg.name;
+        const availableOutputs = Object.keys(instanceOutputs).filter(key => key.startsWith(instName + '@'));
+        
+        if (availableOutputs.length >= 3) {
+          // Use first 3 outputs for RGB
+          const [r, g, b] = availableOutputs.slice(0, 3);
+          rCode = instanceOutputs[r] || '0.0';
+          gCode = instanceOutputs[g] || '0.0';
+          bCode = instanceOutputs[b] || '0.0';
+          logger.info('WebGL', `Display mapping: ${r} → r, ${g} → g, ${b} → b`);
+        } else if (availableOutputs.length === 1) {
+          // Single output - use as grayscale
+          const singleOut = instanceOutputs[availableOutputs[0]];
+          rCode = gCode = bCode = singleOut;
+          logger.info('WebGL', `Display grayscale: ${availableOutputs[0]} → rgb`);
+        } else {
+          logger.warn('WebGL', `Instance ${instName} has insufficient outputs for display`);
+        }
+      }
+    } else if (displayStmt.args.length >= 3) {
+      // Traditional 3-argument display
+      rCode = this.compileToGLSL(displayStmt.args[0], this.env, instanceOutputs);
+      gCode = this.compileToGLSL(displayStmt.args[1], this.env, instanceOutputs);
+      bCode = this.compileToGLSL(displayStmt.args[2], this.env, instanceOutputs);
+      logger.info('WebGL', 'Display using 3 separate expressions');
+    }
+
+    // Generate texture uniform declarations
+    const textureUniforms = [];
+    for (const [instName, textureInfo] of this.textures) {
+      textureUniforms.push(`uniform sampler2D ${textureInfo.uniformName};`);
+    }
+
+    return `
+      precision highp float;
+      
+      uniform vec2 u_resolution;
+      uniform float u_time;
+      uniform float u_frames;
+      uniform vec2 u_mouse;
+      ${textureUniforms.join('\n      ')}
+      
+      varying vec2 v_texCoord;
+      
+      // Fast noise function for GPU
+      float hash(vec3 p) {
+        p = fract(p * vec3(443.8975, 397.2973, 491.1871));
+        p += dot(p, p.yxz + 19.19);
+        return fract((p.x + p.y) * p.z);
+      }
+      
+      float noise3(float x, float y, float t) {
+        vec3 i = floor(vec3(x, y, t));
+        vec3 f = fract(vec3(x, y, t));
+        f = f * f * (3.0 - 2.0 * f);
+        
+        float n000 = hash(i);
+        float n100 = hash(i + vec3(1.0, 0.0, 0.0));
+        float n010 = hash(i + vec3(0.0, 1.0, 0.0));
+        float n110 = hash(i + vec3(1.0, 1.0, 0.0));
+        float n001 = hash(i + vec3(0.0, 0.0, 1.0));
+        float n101 = hash(i + vec3(1.0, 0.0, 1.0));
+        float n011 = hash(i + vec3(0.0, 1.0, 1.0));
+        float n111 = hash(i + vec3(1.0, 1.0, 1.0));
+        
+        float x00 = mix(n000, n100, f.x);
+        float x10 = mix(n010, n110, f.x);
+        float x01 = mix(n001, n101, f.x);
+        float x11 = mix(n011, n111, f.x);
+        
+        float y0 = mix(x00, x10, f.y);
+        float y1 = mix(x01, x11, f.y);
+        
+        return mix(y0, y1, f.z);
+      }
+      
+      // User-defined spindle functions
+      ${spindleFunctions.join('\n      ')}
+      
+      void main() {
+        vec2 uv = v_texCoord;
+        
+        // Computed variables and instances
+${glslCode.join('\n')}
+        
+        // Final color calculation
+        float r = ${rCode};
+        float g = ${gCode};
+        float b = ${bCode};
+        
+        gl_FragColor = vec4(
+          clamp(r, 0.0, 1.0),
+          clamp(g, 0.0, 1.0),
+          clamp(b, 0.0, 1.0),
+          1.0
+        );
+      }
+    `;
+  }
+
+  // Check if a spindle definition can be compiled to GLSL
+  canCompileSpindleToGLSL(spindleDef) {
+    if (!spindleDef || !spindleDef.body || !spindleDef.body.body) {
+      console.log(`Spindle ${spindleDef?.name || 'unknown'} failed basic checks:`, {
+        hasSpindleDef: !!spindleDef,
+        hasBody: !!(spindleDef && spindleDef.body),
+        hasBodyBody: !!(spindleDef && spindleDef.body && spindleDef.body.body)
+      });
+      return false;
+    }
+
+    console.log(`Checking compilability of spindle '${spindleDef.name}':`, {
+      bodyStatements: spindleDef.body.body.map(s => ({ type: s.type, name: s.name }))
+    });
+
+    // Check each statement in the spindle body
+    for (const stmt of spindleDef.body.body) {
+      // Only support Let and Assign statements for now
+      if (stmt.type !== 'Let' && stmt.type !== 'Assign') {
+        console.log(`Spindle '${spindleDef.name}' contains unsupported statement type: ${stmt.type}`);
+        return false;
+      }
+
+      // Check if the expression can be compiled to GLSL
+      if (!this.canCompileExpressionToGLSL(stmt.expr)) {
+        console.log(`Spindle '${spindleDef.name}' contains non-compilable expression in statement:`, stmt);
+        return false;
+      }
+    }
+
+    console.log(`Spindle '${spindleDef.name}' is compilable to GLSL!`);
+    return true;
+  }
+
+  // Check if an expression can be compiled to GLSL
+  canCompileExpressionToGLSL(expr) {
+    if (!expr) return false;
+
+    switch (expr.type) {
+      case 'Num':
+      case 'Me':
+      case 'Mouse':
+        return true;
+      
+      case 'Var':
+        // Variables are OK if they refer to parameters or local variables
+        return true;
+      
+      case 'Unary':
+        return this.canCompileExpressionToGLSL(expr.expr);
+      
+      case 'Bin':
+        return this.canCompileExpressionToGLSL(expr.left) && 
+               this.canCompileExpressionToGLSL(expr.right);
+      
+      case 'If':
+        return this.canCompileExpressionToGLSL(expr.cond) &&
+               this.canCompileExpressionToGLSL(expr.t) &&
+               this.canCompileExpressionToGLSL(expr.e);
+      
+      case 'Call':
+        // Only allow built-in mathematical functions
+        const supportedFunctions = [
+          'sin', 'cos', 'tan', 'sqrt', 'abs', 'exp', 'log',
+          'min', 'max', 'floor', 'ceil', 'round', 'atan2',
+          'clamp', 'length', 'distance', 'normalize', 'noise'
+        ];
+        if (!supportedFunctions.includes(expr.name)) {
+          return false;
+        }
+        return expr.args.every(arg => this.canCompileExpressionToGLSL(arg));
+      
+      case 'StrandAccess':
+        // Strand access is not supported in GLSL functions
+        return false;
+      
+      default:
+        return false;
+    }
+  }
+
+  // Generate GLSL function code for a user-defined spindle
+  generateSpindleGLSL(spindleDef, paramMap = {}) {
+    const functionName = `spindle_${spindleDef.name}`;
+    let params = Array.isArray(spindleDef.params) ? spindleDef.params : [];
+    const outputs = spindleDef.outs;
+
+    // Flatten params if they're nested (common parsing issue)
+    if (params.length === 1 && Array.isArray(params[0])) {
+      params = params[0];
+    }
+
+    // Generate parameter list - ensure all parameters are declared as float
+    const glslParams = params.map(param => `float ${param}`).join(', ');
+    
+    // For single output, return float; for multiple outputs, we'll use separate functions
+    if (outputs.length === 1) {
+      const outputVar = outputs[0];
+      let functionBody = '';
+      let outputAssigned = false;
+
+      // Create parameter mapping for this function
+      const localParamMap = { ...paramMap };
+      for (const param of params) {
+        localParamMap[param] = param; // Parameters map to themselves in GLSL
+      }
+      
+      // Process each statement in the body
+      for (const stmt of spindleDef.body.body) {
+        if (stmt.type === 'Let') {
+          // Local variable declaration
+          const glslExpr = this.compileToGLSL(stmt.expr, this.env, localParamMap);
+          functionBody += `    float ${stmt.name} = ${glslExpr};\n`;
+          localParamMap[stmt.name] = stmt.name; // Add to local scope
+        } else if (stmt.type === 'Assign' && stmt.name === outputVar) {
+          // Assignment to output variable
+          const glslExpr = this.compileToGLSL(stmt.expr, this.env, localParamMap);
+          if (stmt.op === '=') {
+            functionBody += `    return ${glslExpr};\n`;
+            outputAssigned = true;
+          } else {
+            // For compound assignments, we need a temporary variable
+            functionBody += `    float ${outputVar} = 0.0;\n`;
+            const rhs = this.compileToGLSL(stmt.expr, this.env, localParamMap);
+            if (stmt.op === '+=') functionBody += `    ${outputVar} += ${rhs};\n`;
+            else if (stmt.op === '-=') functionBody += `    ${outputVar} -= ${rhs};\n`;
+            else if (stmt.op === '*=') functionBody += `    ${outputVar} *= ${rhs};\n`;
+            else if (stmt.op === '/=') functionBody += `    ${outputVar} /= max(${rhs}, 0.000001);\n`;
+            functionBody += `    return ${outputVar};\n`;
+            outputAssigned = true;
+          }
+        }
+      }
+
+      if (!outputAssigned) {
+        functionBody += `    return 0.0;\n`;
+      }
+
+      return `float ${functionName}(${glslParams}) {\n${functionBody}}`;
+    } else {
+      // Multiple outputs - generate separate functions for each output
+      const functions = [];
+      for (let i = 0; i < outputs.length; i++) {
+        const outputVar = outputs[i];
+        const outputFunctionName = `${functionName}_${outputVar}`;
+        let functionBody = '';
+        let outputAssigned = false;
+
+        // Process statements, tracking local variables and parameters
+        const localParamMap = { ...paramMap };
+        for (const param of params) {
+          localParamMap[param] = param; // Parameters map to themselves in GLSL
+        }
+        
+        for (const stmt of spindleDef.body.body) {
+          if (stmt.type === 'Let') {
+            const glslExpr = this.compileToGLSL(stmt.expr, this.env, localParamMap);
+            functionBody += `    float ${stmt.name} = ${glslExpr};\n`;
+            localParamMap[stmt.name] = stmt.name;
+          } else if (stmt.type === 'Assign' && stmt.name === outputVar) {
+            const glslExpr = this.compileToGLSL(stmt.expr, this.env, localParamMap);
+            if (stmt.op === '=') {
+              functionBody += `    return ${glslExpr};\n`;
+              outputAssigned = true;
+            } else {
+              functionBody += `    float ${outputVar} = 0.0;\n`;
+              const rhs = this.compileToGLSL(stmt.expr, this.env, localParamMap);
+              if (stmt.op === '+=') functionBody += `    ${outputVar} += ${rhs};\n`;
+              else if (stmt.op === '-=') functionBody += `    ${outputVar} -= ${rhs};\n`;
+              else if (stmt.op === '*=') functionBody += `    ${outputVar} *= ${rhs};\n`;
+              else if (stmt.op === '/=') functionBody += `    ${outputVar} /= max(${rhs}, 0.000001);\n`;
+              functionBody += `    return ${outputVar};\n`;
+              outputAssigned = true;
+            }
+          }
+        }
+
+        if (!outputAssigned) {
+          functionBody += `    return 0.0;\n`;
+        }
+
+        functions.push(`float ${outputFunctionName}(${glslParams}) {\n${functionBody}}`);
+      }
+      return functions.join('\n\n');
+    }
+  }
+
+  // Compile a user-defined spindle to GLSL function calls
+  compileUserSpindleToGLSL(stmt, spindleDef, glslCode, instanceOutputs) {
+    const spindleName = stmt.callee;
+    const args = stmt.args;
+    const outputs = spindleDef.outs;
+    
+    logger.info('WebGL', `Compiling user-defined spindle '${spindleName}' to GLSL`);
+    
+    // Compile arguments to GLSL
+    const compiledArgs = args.map(arg => this.compileToGLSL(arg, this.env, instanceOutputs));
+    
+    // Generate output variables using function calls
+    if (outputs.length === 1) {
+      // Single output - direct function call
+      const functionName = `spindle_${spindleName}`;
+      
+      for (const output of stmt.outs) {
+        const outName = typeof output === 'string' ? output : (output.name || output.alias);
+        const varName = `${stmt.inst}_${outName}`;
+        const functionCall = `${functionName}(${compiledArgs.join(', ')})`;
+        
+        glslCode.push(`  float ${varName} = ${functionCall};`);
+        instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+        
+        logger.debug('WebGL', `User spindle output: ${varName} = ${functionCall}`);
+      }
+    } else {
+      // Multiple outputs - separate function calls for each output
+      for (let i = 0; i < stmt.outs.length && i < outputs.length; i++) {
+        const output = stmt.outs[i];
+        const outName = typeof output === 'string' ? output : (output.name || output.alias);
+        const spindleOutput = outputs[i];
+        const varName = `${stmt.inst}_${outName}`;
+        const functionName = `spindle_${spindleName}_${spindleOutput}`;
+        const functionCall = `${functionName}(${compiledArgs.join(', ')})`;
+        
+        glslCode.push(`  float ${varName} = ${functionCall};`);
+        instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+        
+        logger.debug('WebGL', `User spindle output: ${varName} = ${functionCall}`);
+      }
+    }
+    
+    return true;
+  }
+
+  // Compile specific spindles to GLSL when possible
+  compileSpindleToGLSL(stmt, glslCode, instanceOutputs) {
+    const spindleName = stmt.callee;
+    const args = stmt.args;
+    
+    console.log(`=== Attempting to compile spindle: ${spindleName} ===`);
+    
+    // Check if this is a user-defined spindle that can be compiled to GLSL
+    const spindleDef = this.env.spindles.get(spindleName);
+    console.log(`Looking up user spindle '${spindleName}':`, {
+      found: !!spindleDef,
+      availableSpindles: Array.from(this.env.spindles.keys())
+    });
+    
+    if (spindleDef && this.canCompileSpindleToGLSL(spindleDef)) {
+      logger.info('WebGL', `Compiling user-defined spindle '${spindleName}' to GLSL`);
+      return this.compileUserSpindleToGLSL(stmt, spindleDef, glslCode, instanceOutputs);
+    }
+    
+    // Handle known built-in spindles that can be compiled to GLSL
+    if (spindleName === 'circle') {
+      // circle(x, y, cx, cy, radius)
+      if (args.length >= 5) {
+        const x = this.compileToGLSL(args[0], this.env, instanceOutputs);
+        const y = this.compileToGLSL(args[1], this.env, instanceOutputs);
+        const cx = this.compileToGLSL(args[2], this.env, instanceOutputs);
+        const cy = this.compileToGLSL(args[3], this.env, instanceOutputs);
+        const rad = this.compileToGLSL(args[4], this.env, instanceOutputs);
+        
+        for (const output of stmt.outs) {
+          const outName = typeof output === 'string' ? output : (output.name || output.alias);
+          const varName = `${stmt.inst}_${outName}`;
+          glslCode.push(`  float dist_${varName} = distance(vec2(${x}, ${y}), vec2(${cx}, ${cy}));`);
+          glslCode.push(`  float ${varName} = (dist_${varName} < ${rad}) ? 1.0 : 0.0;`);
+          instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+          logger.debug('WebGL', `Compiled circle output: ${varName}`);
+        }
+        return true;
+      }
+    }
+    
+    else if (spindleName === 'threshold') {
+      // threshold(i, level)
+      if (args.length >= 2) {
+        const input = this.compileToGLSL(args[0], this.env, instanceOutputs);
+        const level = this.compileToGLSL(args[1], this.env, instanceOutputs);
+        
+        for (const output of stmt.outs) {
+          const outName = typeof output === 'string' ? output : (output.name || output.alias);
+          const varName = `${stmt.inst}_${outName}`;
+          glslCode.push(`  float ${varName} = (${input} > ${level}) ? 0.0 : 1.0;`);
+          instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+          logger.debug('WebGL', `Compiled threshold output: ${varName}`);
+        }
+        return true;
+      }
+    }
+    
+    else if (spindleName === 'mask') {
+      // mask(mask, i)
+      if (args.length >= 2) {
+        const mask = this.compileToGLSL(args[0], this.env, instanceOutputs);
+        const input = this.compileToGLSL(args[1], this.env, instanceOutputs);
+        
+        for (const output of stmt.outs) {
+          const outName = typeof output === 'string' ? output : (output.name || output.alias);
+          const varName = `${stmt.inst}_${outName}`;
+          glslCode.push(`  float ${varName} = (${mask} == 0.0) ? 0.0 : ${input};`);
+          instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+          logger.debug('WebGL', `Compiled mask output: ${varName}`);
+        }
+        return true;
+      }
+    }
+    
+    else if (spindleName === 'recolor') {
+      // recolor(i, target, new)
+      if (args.length >= 3) {
+        const input = this.compileToGLSL(args[0], this.env, instanceOutputs);
+        const target = this.compileToGLSL(args[1], this.env, instanceOutputs);
+        const newVal = this.compileToGLSL(args[2], this.env, instanceOutputs);
+        
+        for (const output of stmt.outs) {
+          const outName = typeof output === 'string' ? output : (output.name || output.alias);
+          const varName = `${stmt.inst}_${outName}`;
+          glslCode.push(`  float ${varName} = (${input} == ${target}) ? ${newVal} : ${input};`);
+          instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+          logger.debug('WebGL', `Compiled recolor output: ${varName}`);
+        }
+        return true;
+      }
+    }
+    
+    else if (spindleName === 'compose') {
+      // compose(r, g, b) or any number of args
+      for (let i = 0; i < stmt.outs.length && i < args.length; i++) {
+        const output = stmt.outs[i];
+        const outName = typeof output === 'string' ? output : (output.name || output.alias);
+        const varName = `${stmt.inst}_${outName}`;
+        const argGLSL = this.compileToGLSL(args[i], this.env, instanceOutputs);
+        glslCode.push(`  float ${varName} = ${argGLSL};`);
+        instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+        logger.debug('WebGL', `Compiled compose output: ${varName} = ${argGLSL}`);
+      }
+      return true;
+    }
+    
+    else if (spindleName === 'noise') {
+      // noise(x, y, t, ...)
+      const x = args[0] ? this.compileToGLSL(args[0], this.env, instanceOutputs) : 'uv.x';
+      const y = args[1] ? this.compileToGLSL(args[1], this.env, instanceOutputs) : 'uv.y';
+      const t = args[2] ? this.compileToGLSL(args[2], this.env, instanceOutputs) : 'u_time';
+      
+      for (const output of stmt.outs) {
+        const outName = typeof output === 'string' ? output : (output.name || output.alias);
+        const varName = `${stmt.inst}_${outName}`;
+        glslCode.push(`  float ${varName} = noise3(${x} * 3.1, ${y} * 3.1, ${t} * 0.5);`);
+        instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+        logger.debug('WebGL', `Compiled noise output: ${varName}`);
+      }
+      return true;
+    }
+    
+    // If we can't compile this spindle to GLSL, log it but don't error
+    logger.warn('WebGL', `Cannot compile spindle '${spindleName}' to GLSL - will fallback to CPU`);
+    return false;
+  }
+
+  compile() {
+    const vertexShader = `
+      attribute vec2 a_position;
+      varying vec2 v_texCoord;
+      
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+        v_texCoord = (a_position + 1.0) * 0.5;
+        v_texCoord.y = 1.0 - v_texCoord.y;
+      }
+    `;
+
+    const fragmentShader = this.generateFragmentShader();
+    if (!fragmentShader) {
+      console.error('Failed to generate fragment shader');
+      return false;
+    }
+
+    console.log('Generated GLSL:', fragmentShader);
+    
+    this.program = this.createProgram(vertexShader, fragmentShader);
+    if (!this.program) return false;
+
+    const gl = this.gl;
+    gl.useProgram(this.program);
+
+    // Setup attributes
+    const positionLoc = gl.getAttribLocation(this.program, 'a_position');
+    gl.enableVertexAttribArray(positionLoc);
+    gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+
+    // Cache uniform locations
+    this.uniforms = {
+      resolution: gl.getUniformLocation(this.program, 'u_resolution'),
+      time: gl.getUniformLocation(this.program, 'u_time'),
+      frames: gl.getUniformLocation(this.program, 'u_frames'),
+      mouse: gl.getUniformLocation(this.program, 'u_mouse')
+    };
+    
+    // Cache texture uniform locations and bind texture units
+    for (const [, textureInfo] of this.textures) {
+      this.uniforms[textureInfo.uniformName] = gl.getUniformLocation(this.program, textureInfo.uniformName);
+      if (this.uniforms[textureInfo.uniformName]) {
+        gl.uniform1i(this.uniforms[textureInfo.uniformName], textureInfo.unit);
+      }
+    }
+
+    return true;
+  }
+
+  render() {
+    if (!this.program) return;
+
+    const gl = this.gl;
+    const env = this.env;
+
+    // Update canvas size to match WEFT resolution
+    const width = env.resW;
+    const height = env.resH;
+    
+    // Resize canvas if needed
+    if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+      console.log(`WebGL canvas resized to: ${width}x${height}`);
+    }
+    
+    gl.viewport(0, 0, width, height);
+
+    // Set uniforms
+    gl.uniform2f(this.uniforms.resolution, width, height);
+    gl.uniform1f(this.uniforms.time, env.time());
+    gl.uniform1f(this.uniforms.frames, env.frame / env.targetFps);
+    gl.uniform2f(this.uniforms.mouse, env.mouse.x, env.mouse.y);
+
+    // Clear and draw
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    env.frame++;
+  }
+
+  start() {
+    this.running = true;
+    this.compile();
+    this.loop();
+  }
+
+  stop() {
+    this.running = false;
+  }
+
+  loop() {
+    if (!this.running) return;
+
+    const now = performance.now();
+    this.render();
+
+    // Update FPS counter
+    this.frames++;
+    if (now - this.lastTime > 500) {
+      this.fps = Math.round(this.frames * 1000 / (now - this.lastTime));
+      document.getElementById('fpsPill').textContent = `FPS: ${this.fps}`;
+      document.getElementById('perfPill').textContent = `GPU Accelerated`;
+      this.frames = 0;
+      this.lastTime = now;
+    }
+
+    requestAnimationFrame(() => this.loop());
+  }
+}
+
+window.WebGLRenderer = WebGLRenderer;

@@ -1,0 +1,7 @@
+spindle blobs(x,y,t)::<out> {
+out = 0.5 + 0.25 * (sin(3*x*2 + 1.5*t*0.1) * sin(3*y*2  + 2.0*t*0.1) +sin(5*x*2  - 1.0*t*0.1) * sin(4*y*2  + 0.5*t*0.1))
+}
+
+blobs(me.x,me.y,me.t)::n2<a>
+
+display(n2<a>)

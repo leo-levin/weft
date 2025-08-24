@@ -11,6 +11,8 @@ class Renderer {
     this.last = performance.now(); this.acc = 0; this.frames=0; this.fps=0; this.avgMs=0;
     this.lastFrameTime = performance.now();
     this.frameTimeAccumulator = 0;
+    this.lastResW = env.resW;
+    this.lastResH = env.resH;
   }
   start(){ this.running=true; this.loop(); }
   stop(){ this.running=false; }
@@ -56,6 +58,19 @@ class Renderer {
   }
   tick(){
     const env = this.env;
+    
+    // Check if resolution changed and recreate buffers if needed
+    if (env.resW !== this.lastResW || env.resH !== this.lastResH) {
+      this.off.width = env.resW;
+      this.off.height = env.resH;
+      this.imageData = this.offCtx.createImageData(env.resW, env.resH);
+      this.lastResW = env.resW;
+      this.lastResH = env.resH;
+      
+      // Update resolution display
+      document.getElementById('resPill').textContent = `Res: ${env.resW}×${env.resH}`;
+    }
+    
     if(env.defaultSampler) env.defaultSampler.updateFrame();
     if(env.audio.analyser){
       const buf = new Uint8Array(env.audio.analyser.frequencyBinCount);

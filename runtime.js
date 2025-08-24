@@ -1,37 +1,221 @@
 // runtime.js — utilities, runtime, evaluator, spindles, executor (v2)
 
+// ===== Logger =====
+class Logger {
+  constructor() {
+    this.logs = [];
+    this.maxLogs = 1000;
+    this.filters = { debug: true, info: true, warn: true, error: true };
+    this.autoScroll = true;
+  }
+
+  log(level, component, message, data = null) {
+    const timestamp = new Date().toLocaleTimeString();
+    const entry = { level, component, message, data, timestamp, id: Date.now() + Math.random() };
+    
+    this.logs.push(entry);
+    if (this.logs.length > this.maxLogs) {
+      this.logs.shift();
+    }
+    
+    this.updateUI();
+  }
+
+  debug(component, message, data = null) { this.log('debug', component, message, data); }
+  info(component, message, data = null) { this.log('info', component, message, data); }
+  warn(component, message, data = null) { this.log('warn', component, message, data); }
+  error(component, message, data = null) { this.log('error', component, message, data); }
+
+  clear() {
+    this.logs = [];
+    this.updateUI();
+  }
+
+  setFilters(filters) {
+    this.filters = { ...this.filters, ...filters };
+    this.updateUI();
+  }
+
+  updateUI() {
+    const logOutput = document.getElementById('logOutput');
+    if (!logOutput) return;
+
+    const filteredLogs = this.logs.filter(log => this.filters[log.level]);
+    
+    logOutput.innerHTML = filteredLogs.map(log => {
+      let dataStr = '';
+      if (log.data) {
+        if (typeof log.data === 'object') {
+          dataStr = `<div class="log-data">${JSON.stringify(log.data, null, 2)}</div>`;
+        } else {
+          dataStr = ` <span class="log-data-inline">${log.data}</span>`;
+        }
+      }
+      
+      return `<div class="log-entry ${log.level}">
+        <div class="log-header">
+          <span class="log-timestamp">${log.timestamp}</span>
+          <span class="log-component">${log.component}</span>
+        </div>
+        <div class="log-message">${this.escapeHtml(log.message)}</div>
+        ${dataStr}
+      </div>`;
+    }).join('');
+
+    if (this.autoScroll) {
+      logOutput.scrollTop = logOutput.scrollHeight;
+    }
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  updateScopeViewer(scopeStack) {
+    const scopeViewer = document.getElementById('scopeViewer');
+    if (!scopeViewer) return;
+
+    if (!scopeStack || scopeStack.length === 0) {
+      scopeViewer.innerHTML = '<div class="empty-state">No active scopes</div>';
+      return;
+    }
+
+    const scopeInfo = scopeStack.map((scope, index) => {
+      const vars = Object.keys(scope).filter(k => k !== '__scopeStack').map(key => {
+        let value = scope[key];
+        let valueClass = 'scope-value';
+        
+        if (typeof value === 'function') {
+          value = '[Function]';
+          valueClass += ' scope-function';
+        } else if (value && value.__kind === 'strand') {
+          value = '[Strand]';
+          valueClass += ' scope-strand';
+        } else if (typeof value === 'object' && value !== null) {
+          value = '[Object]';
+          valueClass += ' scope-object';
+        } else if (typeof value === 'number') {
+          value = value.toFixed(3);
+          valueClass += ' scope-number';
+        } else if (typeof value === 'string') {
+          value = `"${value}"`;
+          valueClass += ' scope-string';
+        }
+        
+        return `<div class="scope-var">
+          <span class="scope-key">${key}:</span>
+          <span class="${valueClass}">${value}</span>
+        </div>`;
+      }).join('');
+      
+      return `<div class="scope-level">
+        <div class="scope-header">Scope ${index}</div>
+        <div class="scope-vars">${vars || '<div class="scope-empty">No variables</div>'}</div>
+      </div>`;
+    }).join('');
+
+    scopeViewer.innerHTML = scopeInfo;
+  }
+
+  updateInstanceViewer(instances) {
+    const instanceViewer = document.getElementById('instanceViewer');
+    if (!instanceViewer) return;
+
+    if (!instances || instances.size === 0) {
+      instanceViewer.innerHTML = '<div class="empty-state">No instances</div>';
+      return;
+    }
+
+    const instanceInfo = Array.from(instances.entries()).map(([name, inst]) => {
+      const outputs = Object.keys(inst.outs || {});
+      const outputList = outputs.map(out => 
+        `<span class="instance-output">${out}</span>`
+      ).join(' ');
+      
+      return `<div class="instance-item">
+        <div class="instance-header">
+          <span class="instance-name">${name}</span>
+          <span class="instance-count">${outputs.length} outputs</span>
+        </div>
+        <div class="instance-outputs">${outputList || 'No outputs'}</div>
+      </div>`;
+    }).join('');
+
+    instanceViewer.innerHTML = instanceInfo;
+  }
+}
+
+const logger = new Logger();
+
 // ===== Utils =====
 const clamp = (x, lo=0, hi=1) => Math.min(hi, Math.max(lo, x));
 const lerp = (a,b,t)=>a+(b-a)*t;
 const nowSec = ()=>performance.now()/1000;
 const isNum = v => typeof v === 'number' && isFinite(v);
 
-function hash3(x,y,z){
-  const s = Math.sin(x*127.1 + y*311.7 + z*74.7) * 43758.5453;
-  return s - Math.floor(s);
+// Optimized hash using integer math and lookup table
+const HASH_MULTIPLIER = 0x9E3779B97F4A7C15n;
+const hashCache = new Map();
+
+function hash3(x, y, z) {
+  // Use integer coordinates for cache key
+  const key = `${x|0},${y|0},${z|0}`;
+  let cached = hashCache.get(key);
+  if (cached !== undefined) return cached;
+
+  // Fast integer hash
+  let h = BigInt(x * 73856093 ^ y * 19349663 ^ z * 83492791) * HASH_MULTIPLIER;
+  h = Number((h >> 32n) & 0xFFFFFFFFn) / 0xFFFFFFFF;
+
+  // Cache with size limit
+  if (hashCache.size > 10000) hashCache.clear();
+  hashCache.set(key, h);
+  return h;
 }
-function smoothstep(a,b,x){ const t = clamp((x-a)/(b-a)); return t*t*(3-2*t); }
-// Original high-quality but slow noise
-function noise3(x,y,t){
-  const xi = Math.floor(x), yi = Math.floor(y), ti = Math.floor(t);
-  let xf = x - xi, yf = y - yi, tf = t - ti;
-  let n000 = hash3(xi, yi, ti);
-  let n100 = hash3(xi+1, yi, ti);
-  let n010 = hash3(xi, yi+1, ti);
-  let n110 = hash3(xi+1, yi+1, ti);
-  let n001 = hash3(xi, yi, ti+1);
-  let n101 = hash3(xi+1, yi, ti+1);
-  let n011 = hash3(xi, yi+1, ti+1);
-  let n111 = hash3(xi+1, yi+1, ti+1);
-  let u = smoothstep(0,1,xf), v = smoothstep(0,1,yf), w = smoothstep(0,1,tf);
-  function mix(a,b,t){return a*(1-t)+b*t;}
-  let x00 = mix(n000, n100, u);
-  let x10 = mix(n010, n110, u);
-  let x01 = mix(n001, n101, u);
-  let x11 = mix(n011, n111, u);
-  let y0 = mix(x00, x10, v);
-  let y1 = mix(x01, x11, v);
-  return mix(y0,y1,w);
+
+// Faster smoothstep using optimized formula
+function smoothstep(a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+// Optimized noise with reduced operations
+function noise3(x, y, t) {
+  // Use faster floor
+  const xi = ~~x, yi = ~~y, ti = ~~t;
+  const xf = x - xi, yf = y - yi, tf = t - ti;
+
+  // Compute smoothstep once
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  const w = tf * tf * (3 - 2 * tf);
+
+  // Inline mix operations for speed
+  const n000 = hash3(xi, yi, ti);
+  const n100 = hash3(xi + 1, yi, ti);
+  const n010 = hash3(xi, yi + 1, ti);
+  const n110 = hash3(xi + 1, yi + 1, ti);
+  const n001 = hash3(xi, yi, ti + 1);
+  const n101 = hash3(xi + 1, yi, ti + 1);
+  const n011 = hash3(xi, yi + 1, ti + 1);
+  const n111 = hash3(xi + 1, yi + 1, ti + 1);
+
+  // Optimized trilinear interpolation
+  const x00 = n000 + u * (n100 - n000);
+  const x10 = n010 + u * (n110 - n010);
+  const x01 = n001 + u * (n101 - n001);
+  const x11 = n011 + u * (n111 - n011);
+  const y0 = x00 + v * (x10 - x00);
+  const y1 = x01 + v * (x11 - x01);
+  return y0 + w * (y1 - y0);
+}
+
+// Super fast low-quality noise for preview
+function fastNoise3(x, y, t) {
+  const n = Math.sin(x * 12.9898 + y * 78.233 + t * 37.719) * 437538.5453;
+  return n - ~~n;
 }
 
 
@@ -186,17 +370,23 @@ function evalExprToStrand(node, env) {
     case "Var": {
       const n=node.name;
       return { kind:'strand', evalAt(me, scope) {
+        logger.debug('VarLookup', `Looking up variable '${n}'`);
+        
         if (scope.__scopeStack) {
           for (let i = scope.__scopeStack.length - 1; i >= 0; i--) {
             const s = scope.__scopeStack[i];
             if (s && n in s) {
               const v = s[n];
+              logger.debug('VarLookup', `Found '${n}' in scope ${i}`, { value: v });
               if(v && v.__kind==="strand") return v.eval(me, scope);
               return v;
             }
           }
         }
-        throw new RuntimeError(`Unknown variable '${n}'`);
+        
+        const error = `Unknown variable '${n}'`;
+        logger.error('VarLookup', error, { scopeDepth: scope.__scopeStack?.length || 0 });
+        throw new RuntimeError(error);
       }};
     }
 
@@ -268,12 +458,21 @@ function getNodeId(node) {
   return String(node);
 }
 
-// Pre-resolved builtin function mappings for maximum speed
+// Pre-resolved builtin function mappings with inlined operations
 const BUILTIN_JS_MAP = {
   sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan',
   sqrt: 'Math.sqrt', abs: 'Math.abs', exp: 'Math.exp', log: 'Math.log',
   min: 'Math.min', max: 'Math.max', floor: 'Math.floor', ceil: 'Math.ceil',
   round: 'Math.round', atan2: 'Math.atan2'
+};
+
+// Pre-compiled function strings for common operations
+const INLINE_OPS = {
+  clamp3: '((a,b,c)=>a<b?b:a>c?c:a)',
+  clamp01: '((a)=>a<0?0:a>1?1:a)',
+  mix: '((a,b,t)=>a+(b-a)*t)',
+  fract: '((a)=>a-~~a)',
+  sign: '((a)=>a>0?1:a<0?-1:0)'
 };
 
 // Ultra-optimized compiler - no string building, direct code generation
@@ -340,20 +539,31 @@ function compileWeftFast(node, env, resolvedVars = new Map()) {
       }
 
       // Optimized built-in functions
-      if (name === "clamp" && args.length === 3) {
-        return `Math.min(${args[2]},Math.max(${args[1]},${args[0]}))`;
+      if (name === "clamp") {
+        if (args.length === 3) {
+          return `(${args[0]}<${args[1]}?${args[1]}:${args[0]}>${args[2]}?${args[2]}:${args[0]})`;
+        }
+        return `(${args[0]}<0?0:${args[0]}>1?1:${args[0]})`;
       }
       if (name === "distance" && args.length === 4) {
-        return `Math.hypot(${args[0]}-${args[2]},${args[1]}-${args[3]})`;
+        // Avoid hypot for 2D - direct calculation is faster
+        const dx = `(${args[0]}-${args[2]})`;
+        const dy = `(${args[1]}-${args[3]})`;
+        return `Math.sqrt(${dx}*${dx}+${dy}*${dy})`;
       }
       if (name === "noise" && args.length >= 3) {
+        // Use fast noise for low quality mode
         return `env.__noise3(${args[0]}*3.1,${args[1]}*3.1,${args[2]}*0.5)`;
       }
       if (name === "length") {
+        if (args.length === 2) {
+          return `Math.sqrt(${args[0]}*${args[0]}+${args[1]}*${args[1]})`;
+        }
         return `Math.hypot(${args.join(',')})`;
       }
       if (name === "normalize" && args.length === 3) {
-        return `((${args[0]})-(${args[1]}))/((${args[2]})-(${args[1]})||1e-9)`;
+        const range = `(${args[2]}-${args[1]})`;
+        return `((${args[0]}-${args[1]})/${range}||0)`;
       }
 
       return `${BUILTIN_JS_MAP[name] || 'Math.sin'}(${args.join(',')})`;
@@ -491,39 +701,149 @@ const binaryOps = {
 // ===== Instances & Spindles =====
 function makeSimpleInstance(name, outs){ return { name, outs }; }
 
+// Global image cache for performance
+const imageCache = new Map();
+const preloadedImages = new Set();
+
 class Sampler {
   constructor(){
     this.kind="none"; this.ready=false; this.width=1; this.height=1; this.video=null; this.image=null;
     this.off = document.createElement('canvas');
-    this.offCtx = this.off.getContext('2d', { willReadFrequently: true });
-    this.pixels=null;
+    this.offCtx = this.off.getContext('2d', { willReadFrequently: true, alpha: false });
+    this.pixels=null; this.path = null; this.lastUpdate = 0;
   }
+
+  static preloadImage(path) {
+    if (preloadedImages.has(path)) return Promise.resolve();
+    
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        imageCache.set(path, {
+          image: img,
+          width: img.width,
+          height: img.height,
+          timestamp: performance.now()
+        });
+        preloadedImages.add(path);
+        logger.info('Sampler', `Preloaded image: ${path} (${img.width}x${img.height})`);
+        resolve();
+      };
+      img.onerror = (e) => {
+        logger.warn('Sampler', `Failed to preload image: ${path}`, e);
+        reject(e);
+      };
+      img.src = path;
+    });
+  }
+
+  static clearCache() {
+    imageCache.clear();
+    preloadedImages.clear();
+    logger.info('Sampler', 'Image cache cleared');
+  }
+
   load(path){
+    this.path = path;
     const lower = (path||"").toLowerCase();
+    
+    logger.info('Sampler', `Loading media: ${path}`);
+    
+    // Handle video files
     if(lower.endsWith(".mp4") || lower.endsWith(".webm")){
-      this.kind="video"; this.video=document.createElement('video');
-      this.video.src=path; this.video.muted=true; this.video.loop=true; this.video.playsInline=true; this.video.crossOrigin="anonymous";
+      this.kind="video"; 
+      this.video=document.createElement('video');
+      this.video.src=path; 
+      this.video.muted=true; 
+      this.video.loop=true; 
+      this.video.playsInline=true; 
+      this.video.crossOrigin="anonymous";
+      this.video.preload = "auto";
+      
       this.video.addEventListener('loadeddata', ()=>{
-        this.width=this.video.videoWidth||320; this.height=this.video.videoHeight||180;
-        this.off.width=this.width; this.off.height=this.height; this.ready=true;
+        this.width=this.video.videoWidth||320; 
+        this.height=this.video.videoHeight||180;
+        this.off.width=this.width; 
+        this.off.height=this.height; 
+        this.ready=true;
+        logger.info('Sampler', `Video loaded: ${path} (${this.width}x${this.height})`);
+      });
+      
+      this.video.addEventListener('error', (e)=>{
+        logger.error('Sampler', `Video failed to load: ${path}`, e);
+        this.fallbackPattern();
       });
       return;
     }
-    if(lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif")){
-      this.kind="image"; this.image = new Image(); this.image.crossOrigin="anonymous"; this.image.src=path;
-      console.log('Attempting to load image:', path);
+    
+    // Handle image files with caching
+    if(lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".webp")){
+      this.kind="image";
+      
+      // Check cache first
+      const cached = imageCache.get(path);
+      if (cached) {
+        logger.info('Sampler', `Using cached image: ${path}`);
+        this.image = cached.image;
+        this.width = cached.width;
+        this.height = cached.height;
+        this.off.width = this.width;
+        this.off.height = this.height;
+        this.processImage();
+        return;
+      }
+      
+      // Load new image
+      this.image = new Image(); 
+      this.image.crossOrigin = "anonymous";
+      this.image.decoding = "async"; // Enable async decoding for better performance
+      
       this.image.onload = ()=>{
-        console.log('Image loaded successfully:', path, this.image.width, 'x', this.image.height);
-        this.width=this.image.width; this.height=this.image.height; this.off.width=this.width; this.off.height=this.height;
-        this.offCtx.drawImage(this.image,0,0); this.pixels=this.offCtx.getImageData(0,0,this.width,this.height).data; this.ready=true;
+        logger.info('Sampler', `Image loaded: ${path} (${this.image.width}x${this.image.height})`);
+        this.width = this.image.width; 
+        this.height = this.image.height; 
+        this.off.width = this.width; 
+        this.off.height = this.height;
+        
+        // Cache the image
+        imageCache.set(path, {
+          image: this.image,
+          width: this.width,
+          height: this.height,
+          timestamp: performance.now()
+        });
+        
+        this.processImage();
       };
+      
       this.image.onerror = (e)=>{
-        console.error('Image failed to load:', path, e);
+        logger.error('Sampler', `Image failed to load: ${path}`, e);
         this.fallbackPattern();
       };
+      
+      this.image.src = path;
       return;
     }
+    
+    logger.warn('Sampler', `Unknown file type for: ${path}`);
     this.fallbackPattern();
+  }
+
+  processImage() {
+    // Use requestIdleCallback for non-blocking image processing
+    const processNow = () => {
+      this.offCtx.drawImage(this.image, 0, 0); 
+      this.pixels = this.offCtx.getImageData(0, 0, this.width, this.height).data; 
+      this.ready = true;
+      this.lastUpdate = performance.now();
+    };
+
+    if (window.requestIdleCallback) {
+      requestIdleCallback(processNow, { timeout: 100 });
+    } else {
+      setTimeout(processNow, 0);
+    }
   }
   fallbackPattern(){
     this.kind="fallback"; this.ready=true; this.width=256; this.height=256; this.off.width=this.width; this.off.height=this.height;
@@ -535,57 +855,132 @@ class Sampler {
   play(){ if(this.video){ try{ this.video.play(); }catch{} } }
   updateFrame(){
     if(this.kind==="video" && this.ready){
-      this.offCtx.drawImage(this.video,0,0,this.width,this.height);
-      this.pixels=this.offCtx.getImageData(0,0,this.width,this.height).data;
+      // Throttle video updates for performance
+      const now = performance.now();
+      if (now - this.lastUpdate > 16.67) { // ~60fps max
+        this.offCtx.drawImage(this.video,0,0,this.width,this.height);
+        this.pixels=this.offCtx.getImageData(0,0,this.width,this.height).data;
+        this.lastUpdate = now;
+      }
     }
   }
-  sample(nx, ny){
-    if(!this.ready || !this.pixels){ return [nx, ny, 0.5, 1]; }
-    const x = clamp(Math.floor(nx * (this.width-1)), 0, this.width-1);
-    const y = clamp(Math.floor(ny * (this.height-1)), 0, this.height-1);
+
+  // Optimized sampling with bounds checking and bilinear interpolation option
+  sample(nx, ny, interpolate = false){
+    if(!this.ready || !this.pixels){ 
+      return [nx, ny, 0.5, 1]; 
+    }
+    
+    if (interpolate) {
+      return this.sampleBilinear(nx, ny);
+    } else {
+      return this.sampleNearest(nx, ny);
+    }
+  }
+
+  sampleNearest(nx, ny) {
+    const x = clamp(Math.floor(nx * this.width), 0, this.width-1);
+    const y = clamp(Math.floor(ny * this.height), 0, this.height-1);
     const idx = (y * this.width + x) * 4;
     const d = this.pixels;
     return [d[idx]/255, d[idx+1]/255, d[idx+2]/255, d[idx+3]/255];
   }
+
+  sampleBilinear(nx, ny) {
+    const fx = nx * this.width - 0.5;
+    const fy = ny * this.height - 0.5;
+    const x = Math.floor(fx);
+    const y = Math.floor(fy);
+    const dx = fx - x;
+    const dy = fy - y;
+
+    const x0 = clamp(x, 0, this.width-1);
+    const x1 = clamp(x + 1, 0, this.width-1);
+    const y0 = clamp(y, 0, this.height-1);
+    const y1 = clamp(y + 1, 0, this.height-1);
+
+    const d = this.pixels;
+    const w = this.width;
+
+    const getPixel = (px, py) => {
+      const idx = (py * w + px) * 4;
+      return [d[idx], d[idx+1], d[idx+2], d[idx+3]];
+    };
+
+    const p00 = getPixel(x0, y0);
+    const p10 = getPixel(x1, y0);
+    const p01 = getPixel(x0, y1);
+    const p11 = getPixel(x1, y1);
+
+    const result = [0, 0, 0, 0];
+    for (let i = 0; i < 4; i++) {
+      const top = p00[i] * (1 - dx) + p10[i] * dx;
+      const bottom = p01[i] * (1 - dx) + p11[i] * dx;
+      result[i] = (top * (1 - dy) + bottom * dy) / 255;
+    }
+
+    return result;
+  }
 }
 
 const BuiltinSpindles = {
-  load: (env, args, instName, _outs) => {
+  load: (env, args, instName, outs) => {
     const path = (args[0] && args[0].type==="Str") ? args[0].v : "";
     const xExpr = args[1] ? compileExprOptimized(args[1], env) : null;
     const yExpr = args[2] ? compileExprOptimized(args[2], env) : null;
 
+    logger.info('Builtin', `Loading media: '${path}' for instance '${instName}'`, { outs });
+
     const sampler = new Sampler(); sampler.load(path);
     if(sampler.kind!=="none") env.defaultSampler = sampler;
 
-    const inst = makeSimpleInstance(instName, {
-      r:(me, env)=>{
-        const x = xExpr ? toScalar(xExpr(me, env)) : me.x;
-        const y = yExpr ? toScalar(yExpr(me, env)) : me.y;
-        return (env.defaultSampler||sampler).sample(x, y)[0];
-      },
-      g:(me, env)=>{
-        const x = xExpr ? toScalar(xExpr(me, env)) : me.x;
-        const y = yExpr ? toScalar(yExpr(me, env)) : me.y;
-        return (env.defaultSampler||sampler).sample(x, y)[1];
-      },
-      b:(me, env)=>{
-        const x = xExpr ? toScalar(xExpr(me, env)) : me.x;
-        const y = yExpr ? toScalar(yExpr(me, env)) : me.y;
-        return (env.defaultSampler||sampler).sample(x, y)[2];
-      },
-      a:(me, env)=>{
-        const x = xExpr ? toScalar(xExpr(me, env)) : me.x;
-        const y = yExpr ? toScalar(yExpr(me, env)) : me.y;
-        return (env.defaultSampler||sampler).sample(x, y)[3];
-      },
-      left:(_me)=> env.audio.intensity,
-      right:(_me)=> env.audio.intensity,
-    });
-    // Store the sampler in the instance so sample() can access it
-    inst.sampler = sampler;
+    // Create flexible output mapping
+    const instanceOuts = {};
+    
+    // Get component values function
+    const getComponent = (index, me, env) => {
+      const x = xExpr ? toScalar(xExpr(me, env)) : me.x;
+      const y = yExpr ? toScalar(yExpr(me, env)) : me.y;
+      return (env.defaultSampler||sampler).sample(x, y)[index] || 0;
+    };
+
+    // Map outputs based on their names or positions
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
+      
+      // Try to map based on common color channel names
+      let componentIndex = 0; // default to red
+      if (outName === 'r' || outName === 'red') componentIndex = 0;
+      else if (outName === 'g' || outName === 'green') componentIndex = 1;
+      else if (outName === 'b' || outName === 'blue') componentIndex = 2;
+      else if (outName === 'a' || outName === 'alpha') componentIndex = 3;
+      else if (outName === 'left' || outName === 'right') {
+        // Audio outputs
+        instanceOuts[outName] = {
+          kind: 'strand',
+          evalAt: (_me, _env) => env.audio.intensity || 0
+        };
+        continue;
+      } else {
+        // For any other name, use position-based mapping (r,g,b,a in order)
+        componentIndex = Math.min(i, 3);
+      }
+
+      instanceOuts[outName] = {
+        kind: 'strand',
+        evalAt: (me, env) => getComponent(componentIndex, me, env)
+      };
+      
+      logger.debug('Builtin', `Mapped output '${outName}' to component ${componentIndex}`);
+    }
+
+    const inst = makeSimpleInstance(instName, instanceOuts);
+    inst.sampler = sampler; // Store sampler reference
+    
+    // Handle audio files
     const lower = (path||"").toLowerCase();
     if(lower.endsWith(".wav") || lower.endsWith(".mp3") || lower.endsWith(".ogg")){
+      logger.info('Builtin', `Setting up audio for: ${path}`);
       const el = new Audio(path); el.loop=true; el.crossOrigin="anonymous";
       env.audio.element = el;
       try {
@@ -594,67 +989,126 @@ const BuiltinSpindles = {
         const analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
         src.connect(analyser); analyser.connect(ctx.destination);
         env.audio.ctx=ctx; env.audio.analyser=analyser;
-      } catch {}
+        logger.info('Builtin', 'Audio context created successfully');
+      } catch(e) {
+        logger.warn('Builtin', `Failed to create audio context: ${e.message}`);
+      }
     }
+    
     env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
     return inst;
   },
 
-  sample: (env, args, instName, _outs) => {
+  sample: (env, args, instName, outs) => {
     // sample(imageInstance, x, y) - sample a specific loaded image at custom coordinates
     const imageInstanceName = (args[0] && args[0].type === "Var") ? args[0].name : null;
     const xExpr = compileExprOptimized(args[1], env);
     const yExpr = compileExprOptimized(args[2], env);
 
-    const inst = makeSimpleInstance(instName, {
-      r: (me, env) => {
-        const x = toScalar(xExpr(me, env));
-        const y = toScalar(yExpr(me, env));
-        const imageInst = env.instances.get(imageInstanceName);
-        const sampler = (imageInst && imageInst.sampler) || env.defaultSampler || fallbackSampler;
-        return sampler.sample(x, y)[0];
-      },
-      g: (me, env) => {
-        const x = toScalar(xExpr(me, env));
-        const y = toScalar(yExpr(me, env));
-        const imageInst = env.instances.get(imageInstanceName);
-        const sampler = (imageInst && imageInst.sampler) || env.defaultSampler || fallbackSampler;
-        return sampler.sample(x, y)[1];
-      },
-      b: (me, env) => {
-        const x = toScalar(xExpr(me, env));
-        const y = toScalar(yExpr(me, env));
-        const imageInst = env.instances.get(imageInstanceName);
-        const sampler = (imageInst && imageInst.sampler) || env.defaultSampler || fallbackSampler;
-        return sampler.sample(x, y)[2];
-      },
-      a: (me, env) => {
-        const x = toScalar(xExpr(me, env));
-        const y = toScalar(yExpr(me, env));
-        const imageInst = env.instances.get(imageInstanceName);
-        const sampler = (imageInst && imageInst.sampler) || env.defaultSampler || fallbackSampler;
-        return sampler.sample(x, y)[3];
-      }
-    });
+    logger.info('Builtin', `Creating sample instance '${instName}' from '${imageInstanceName}'`, { outs });
+
+    const instanceOuts = {};
+    
+    // Get component values function with safety checks
+    const getComponent = (index, me, env) => {
+      const x = toScalar(xExpr(me, env));
+      const y = toScalar(yExpr(me, env));
+      const imageInst = env.instances.get(imageInstanceName);
+      const sampler = (imageInst && imageInst.sampler) || env.defaultSampler || fallbackSampler;
+      return sampler.sample(x, y)[index] || 0;
+    };
+
+    // Map outputs flexibly
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
+      
+      let componentIndex = 0; // default to red
+      if (outName === 'r' || outName === 'red') componentIndex = 0;
+      else if (outName === 'g' || outName === 'green') componentIndex = 1;
+      else if (outName === 'b' || outName === 'blue') componentIndex = 2;
+      else if (outName === 'a' || outName === 'alpha') componentIndex = 3;
+      else componentIndex = Math.min(i, 3); // position-based fallback
+
+      instanceOuts[outName] = {
+        kind: 'strand',
+        evalAt: (me, env) => getComponent(componentIndex, me, env)
+      };
+      
+      logger.debug('Builtin', `Sample output '${outName}' → component ${componentIndex}`);
+    }
+
+    const inst = makeSimpleInstance(instName, instanceOuts);
     env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
     return inst;
   },
 
-  video: (env, args, instName, _outs)=>{
-    const xf = compileExprOptimized(args[0], env), yf = compileExprOptimized(args[1], env);
-    const inst = makeSimpleInstance(instName, {
-      r:(me,env)=> (env.defaultSampler||fallbackSampler).sample(toScalar(xf(me,env)), toScalar(yf(me,env)))[0],
-      g:(me,env)=> (env.defaultSampler||fallbackSampler).sample(toScalar(xf(me,env)), toScalar(yf(me,env)))[1],
-      b:(me,env)=> (env.defaultSampler||fallbackSampler).sample(toScalar(xf(me,env)), toScalar(yf(me,env)))[2],
-      a:(me,env)=> (env.defaultSampler||fallbackSampler).sample(toScalar(xf(me,env)), toScalar(yf(me,env)))[3],
-    });
+  video: (env, args, instName, outs) => {
+    const xf = compileExprOptimized(args[0], env);
+    const yf = compileExprOptimized(args[1], env);
+    
+    logger.info('Builtin', `Creating video instance '${instName}'`, { outs });
+
+    const instanceOuts = {};
+    
+    // Get component values function
+    const getComponent = (index, me, env) => {
+      return (env.defaultSampler||fallbackSampler).sample(toScalar(xf(me,env)), toScalar(yf(me,env)))[index] || 0;
+    };
+
+    // Map outputs flexibly
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
+      
+      let componentIndex = 0; // default to red
+      if (outName === 'r' || outName === 'red') componentIndex = 0;
+      else if (outName === 'g' || outName === 'green') componentIndex = 1;
+      else if (outName === 'b' || outName === 'blue') componentIndex = 2;
+      else if (outName === 'a' || outName === 'alpha') componentIndex = 3;
+      else componentIndex = Math.min(i, 3); // position-based fallback
+
+      instanceOuts[outName] = {
+        kind: 'strand',
+        evalAt: (me, env) => getComponent(componentIndex, me, env)
+      };
+      
+      logger.debug('Builtin', `Video output '${outName}' → component ${componentIndex}`);
+    }
+
+    const inst = makeSimpleInstance(instName, instanceOuts);
     env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
     return inst;
   },
-  compose: (env,args,instName,_outs)=>{
-    const r=compileExprOptimized(args[0],env), g=compileExprOptimized(args[1],env), b=compileExprOptimized(args[2],env);
-    const inst = makeSimpleInstance(instName, { rgb:(me,env)=>[toScalar(r(me,env)),toScalar(g(me,env)),toScalar(b(me,env))] });
-    env.instances.set(instName,inst); return inst;
+  compose: (env, args, instName, outs) => {
+    logger.info('Builtin', `Creating compose instance '${instName}'`, { outs, argCount: args.length });
+    
+    const argExprs = args.map(arg => compileExprOptimized(arg, env));
+    const instanceOuts = {};
+
+    // Map outputs flexibly - either by name or position
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
+      const argIndex = Math.min(i, argExprs.length - 1);
+      
+      instanceOuts[outName] = {
+        kind: 'strand',
+        evalAt: (me, env) => {
+          if (argIndex < argExprs.length) {
+            return toScalar(argExprs[argIndex](me, env));
+          }
+          return 0;
+        }
+      };
+      
+      logger.debug('Builtin', `Compose output '${outName}' → arg[${argIndex}]`);
+    }
+
+    const inst = makeSimpleInstance(instName, instanceOuts);
+    env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
+    return inst;
   },
 
   map: (env, args, instName, outs) => {
@@ -662,47 +1116,76 @@ const BuiltinSpindles = {
     const spindleDef = env.spindles.get(spindleName);
 
     if (!spindleDef) {
-      throw new RuntimeError(`Unknown spindle '${spindleName}' in map`);
+      const error = `Unknown spindle '${spindleName}' in map`;
+      logger.error('Builtin', error);
+      throw new RuntimeError(error);
     }
+
+    logger.info('Builtin', `Creating map instance '${instName}' using spindle '${spindleName}'`, { 
+      outs, 
+      spindleOuts: spindleDef.outs,
+      argCount: args.length - 1 
+    });
 
     // Get array arguments - compile as expressions
     const arrayExprs = args.slice(1).map(arg => compileExprOptimized(arg, env));
+    const instanceOuts = {};
 
-    const inst = makeSimpleInstance(instName, {});
-
-    // Create outputs - one for each element in the arrays
+    // Create outputs - one for each requested output
     for (let i = 0; i < outs.length; i++) {
-      const outName = typeof outs[i] === 'string' ? outs[i] : outs[i].name || outs[i].alias;
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
 
-      inst.outs[outName] = (me, globalEnv) => {
-        // Evaluate all array arguments
-        const arrays = arrayExprs.map(expr => {
-          const result = expr(me, globalEnv);
-          return Array.isArray(result) ? result : [result];
-        });
+      instanceOuts[outName] = {
+        kind: 'strand',
+        evalAt: (me, globalEnv) => {
+          try {
+            // Evaluate all array arguments
+            const arrays = arrayExprs.map(expr => {
+              const result = expr(me, globalEnv);
+              return Array.isArray(result) ? result : [result];
+            });
 
-        // Get the i-th element from each array
-        const elementArgs = arrays.map(arr => arr[i] || arr[0] || 0);
+            // Get the i-th element from each array (or first element if array is shorter)
+            const elementArgs = arrays.map(arr => arr[i] || arr[0] || 0);
 
-        // Create a proper call with the element arguments
-        const callWithArgs = {
-          callee: spindleName,
-          args: elementArgs.map(val => ({ type: 'Num', v: toScalar(val) }))
-        };
-        const evalFn = evalSpindleCall(callWithArgs, env);
-        const result = evalFn(me, globalEnv);
+            // Create a proper call with the element arguments
+            const callWithArgs = {
+              callee: spindleName,
+              args: elementArgs.map(val => ({ type: 'Num', v: toScalar(val) }))
+            };
+            
+            const evalFn = evalSpindleCall(callWithArgs, env);
+            const result = evalFn(me, globalEnv);
 
-        // Return the first output of the mapped spindle
-        const firstOutput = spindleDef.outs[0];
-        return result[firstOutput] || 0;
+            // Try to return a corresponding output from the mapped spindle
+            // First try exact name match, then positional, then first output
+            if (result[outName] !== undefined) {
+              return result[outName];
+            } else if (spindleDef.outs[i]) {
+              return result[spindleDef.outs[i]] || 0;
+            } else if (spindleDef.outs[0]) {
+              return result[spindleDef.outs[0]] || 0;
+            }
+            return 0;
+          } catch (error) {
+            logger.warn('Builtin', `Map evaluation failed for '${outName}': ${error.message}`);
+            return 0;
+          }
+        }
       };
+      
+      logger.debug('Builtin', `Map output '${outName}' mapped to element ${i}`);
     }
 
+    const inst = makeSimpleInstance(instName, instanceOuts);
     env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
     return inst;
   },
 
-  noise: (env, args, instName) => {
+  noise: (env, args, instName, outs) => {
+    logger.info('Builtin', `Creating noise instance '${instName}'`, { outs, argCount: args.length });
+    
     // Use compiled expressions for performance
     const xExpr = args[0] ? compileExprOptimized(args[0], env) : (me) => me.x;
     const yExpr = args[1] ? compileExprOptimized(args[1], env) : (me) => me.y;
@@ -711,32 +1194,47 @@ const BuiltinSpindles = {
     const periodExpr = args[4] ? compileExprOptimized(args[4], env) : () => 1;
     const harmonicsExpr = args[5] ? compileExprOptimized(args[5], env) : () => 3;
 
-    const inst = makeSimpleInstance(instName, {
-      out: (me, env) => {
-        const x = xExpr(me, env);
-        const y = yExpr(me, env);
-        const t = tExpr(me, env);
-        const amp = ampExpr(me, env);
-        const period = Math.max(0.001, periodExpr(me, env));
-        const harmonics = Math.max(1, Math.floor(harmonicsExpr(me, env)));
-        const freq = 1.0 / period;
+    const instanceOuts = {};
+    
+    // Generate noise value
+    const generateNoise = (me, env) => {
+      const x = xExpr(me, env);
+      const y = yExpr(me, env);
+      const t = tExpr(me, env);
+      const amp = ampExpr(me, env);
+      const period = Math.max(0.001, periodExpr(me, env));
+      const harmonics = Math.max(1, Math.floor(harmonicsExpr(me, env)));
+      const freq = 1.0 / period;
 
-        if (harmonics === 1) {
-          return noise3(x * freq, y * freq, t * freq) * amp;
-        }
-
-        let result = 0, maxValue = 0, f = freq, a = amp;
-        for (let i = 0; i < harmonics; i++) {
-          result += noise3(x * f, y * f, t * f) * a;
-          maxValue += a;
-          f *= 2.0;
-          a *= 0.5;
-        }
-        return maxValue > 0 ? result / maxValue : 0;
+      if (harmonics === 1) {
+        return noise3(x * freq, y * freq, t * freq) * amp;
       }
-    });
 
+      let result = 0, maxValue = 0, f = freq, a = amp;
+      for (let i = 0; i < harmonics; i++) {
+        result += noise3(x * f, y * f, t * f) * a;
+        maxValue += a;
+        f *= 2.0;
+        a *= 0.5;
+      }
+      return maxValue > 0 ? result / maxValue : 0;
+    };
+
+    // Map outputs - all outputs get the same noise value (unless specified otherwise)
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
+      
+      instanceOuts[outName] = {
+        kind: 'strand',
+        evalAt: generateNoise
+      };
+      
+      logger.debug('Builtin', `Noise output '${outName}' created`);
+    }
+
+    const inst = makeSimpleInstance(instName, instanceOuts);
     env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
     return inst;
   },
 };
@@ -745,36 +1243,63 @@ const fallbackSampler = new Sampler(); fallbackSampler.fallbackPattern();
 // Fixed spindle call evaluator that properly binds parameters
 function evalSpindleCall(call, outerEnv) {
   const def = outerEnv.spindles.get(call.callee);
-  if (!def) throw new RuntimeError(`Unknown spindle '${call.callee}'`);
+  if (!def) {
+    const error = `Unknown spindle '${call.callee}'`;
+    logger.error('SpindleCall', error);
+    throw new RuntimeError(error);
+  }
 
+  logger.info('SpindleCall', `Evaluating spindle '${call.callee}'`, {
+    params: def.params,
+    outputs: def.outs,
+    argCount: call.args.length
+  });
 
   // Compile arguments as strands
   const argStrands = call.args.map(arg => evalExprToStrand(arg, outerEnv));
 
   return function(me, globalEnv) {
+    logger.debug('SpindleCall', `Executing ${call.callee} at (${me.x}, ${me.y})`);
+    
     // Create local scope with parameter bindings
     const paramBindings = {};
 
-    // Flatten parameter list if it's nested
-    const params = Array.isArray(def.params[0]) ? def.params[0] : def.params;
+    // Handle both nested and flat parameter lists properly
+    let params = def.params;
+    if (Array.isArray(params) && params.length > 0 && Array.isArray(params[0])) {
+      params = params[0]; // Flatten nested parameters
+    }
+    if (!Array.isArray(params)) {
+      params = []; // Ensure params is always an array
+    }
+
+    logger.debug('SpindleCall', `Binding ${params.length} parameters`, { params });
 
     // Bind parameters to evaluated argument values
     for (let i = 0; i < params.length; i++) {
       const paramName = params[i];
-      if (!paramName) continue; // Skip empty parameter names
+      if (!paramName || typeof paramName !== 'string') {
+        logger.warn('SpindleCall', `Skipping invalid parameter at index ${i}`, { paramName });
+        continue;
+      }
+      
       const argStrand = argStrands[i] || ConstantStrand(0);
       const value = argStrand.evalAt(me, globalEnv);
+      
       // Store as constant strand for consistent lookup
       paramBindings[paramName] = { __kind: "strand", eval: () => value };
+      
+      logger.debug('SpindleCall', `Bound parameter '${paramName}' = ${value}`);
     }
 
     // Initialize output variables
     const outputs = {};
     for (const out of def.outs) {
       outputs[out] = 0;
+      logger.debug('SpindleCall', `Initialized output '${out}' = 0`);
     }
 
-    // Create combined scope (parameters + outputs) - ensure outputs are separate objects
+    // Create combined scope (parameters + outputs)
     const localScope = { ...paramBindings };
     for (const out of def.outs) {
       localScope[out] = 0;
@@ -783,10 +1308,14 @@ function evalSpindleCall(call, outerEnv) {
     // Execute body with scope stack
     const oldStack = globalEnv.__scopeStack || [];
     globalEnv.__scopeStack = [...oldStack, localScope];
+    
+    logger.debug('SpindleCall', `Created scope stack depth: ${globalEnv.__scopeStack.length}`);
+    logger.updateScopeViewer(globalEnv.__scopeStack);
 
     try {
       // Execute each statement in the body
       for (const stmt of def.body.body) {
+        logger.debug('SpindleCall', `Executing statement: ${stmt.type}`);
         execStmtWithScope(stmt, me, globalEnv, localScope);
       }
 
@@ -794,19 +1323,32 @@ function evalSpindleCall(call, outerEnv) {
       const result = {};
       for (const out of def.outs) {
         result[out] = localScope[out];
+        logger.debug('SpindleCall', `Output '${out}' = ${result[out]}`);
       }
+      
+      logger.debug('SpindleCall', `${call.callee} completed`, result);
       return result;
 
+    } catch (error) {
+      logger.error('SpindleCall', `Error in ${call.callee}: ${error.message}`, { 
+        localScope: Object.keys(localScope),
+        error: error.stack 
+      });
+      throw error;
     } finally {
       globalEnv.__scopeStack = oldStack;
+      logger.updateScopeViewer(globalEnv.__scopeStack);
     }
   };
 }
 
 function execStmtWithScope(stmt, me, env, localScope) {
+  logger.debug('StmtExec', `Executing ${stmt.type} statement`);
+  
   if (stmt.type === "Let") {
     const value = compileExprOptimized(stmt.expr, env)(me, env);
     localScope[stmt.name] = value;
+    logger.debug('StmtExec', `Let: ${stmt.name} = ${value}`);
     return;
   }
 
@@ -814,13 +1356,20 @@ function execStmtWithScope(stmt, me, env, localScope) {
     const rhs = compileExprOptimized(stmt.expr, env)(me, env);
     const cur = localScope[stmt.name] ?? 0;
 
-
-    if (stmt.op === "=") localScope[stmt.name] = rhs;
-    else if (stmt.op === "+=") localScope[stmt.name] = cur + rhs;
-    else if (stmt.op === "-=") localScope[stmt.name] = cur - rhs;
-    else if (stmt.op === "*=") localScope[stmt.name] = cur * rhs;
-    else if (stmt.op === "/=") localScope[stmt.name] = cur / (rhs || 1e-9);
-    else throw new RuntimeError(`Unknown assignment op ${stmt.op}`);
+    let newValue;
+    if (stmt.op === "=") newValue = rhs;
+    else if (stmt.op === "+=") newValue = cur + rhs;
+    else if (stmt.op === "-=") newValue = cur - rhs;
+    else if (stmt.op === "*=") newValue = cur * rhs;
+    else if (stmt.op === "/=") newValue = cur / (rhs || 1e-9);
+    else {
+      const error = `Unknown assignment op ${stmt.op}`;
+      logger.error('StmtExec', error);
+      throw new RuntimeError(error);
+    }
+    
+    localScope[stmt.name] = newValue;
+    logger.debug('StmtExec', `Assign: ${stmt.name} ${stmt.op} ${rhs} → ${newValue}`);
     return;
   }
 
@@ -829,8 +1378,12 @@ function execStmtWithScope(stmt, me, env, localScope) {
     const end = Math.floor(compileExprOptimized(stmt.end, env)(me, env));
     const inc = start <= end ? 1 : -1;
 
+    logger.debug('StmtExec', `For loop: ${stmt.v} from ${start} to ${end} (inc: ${inc})`);
+
     for (let v = start; inc > 0 ? v <= end : v >= end; v += inc) {
       localScope[stmt.v] = v;
+      logger.debug('StmtExec', `For iteration: ${stmt.v} = ${v}`);
+      
       for (const s of stmt.body.body) {
         execStmtWithScope(s, me, env, localScope);
       }
@@ -838,7 +1391,9 @@ function execStmtWithScope(stmt, me, env, localScope) {
     return;
   }
 
-  throw new RuntimeError(`Unknown body stmt ${stmt.type}`);
+  const error = `Unknown body stmt ${stmt.type}`;
+  logger.error('StmtExec', error);
+  throw new RuntimeError(error);
 }
 
 // Legacy spindle body interpreter (for compatibility)
@@ -860,22 +1415,36 @@ class Executor {
   constructor(env){ this.env = env; this.ast = null; }
 
   loadStandardLibrary() {
+    logger.info('Executor', 'Loading standard library');
+    
     // Load standard library spindles if available
     if (window.StandardLibraryCode && window.Parser) {
       try {
         const stdlibAst = Parser.parse(window.StandardLibraryCode);
+        let loadedCount = 0;
+        
         for (const s of stdlibAst.body) {
           if (s.type === "SpindleDef") {
             this.env.spindles.set(s.name, s);
+            loadedCount++;
+            logger.debug('Executor', `Loaded stdlib spindle: ${s.name}`, { 
+              params: s.params, 
+              outputs: s.outs 
+            });
           }
         }
-        console.log('Standard library loaded:', Object.keys(this.env.spindles).length, 'spindles');
+        
+        logger.info('Executor', `Standard library loaded: ${loadedCount} spindles`);
       } catch (e) {
-        console.warn('Failed to load standard library:', e.message);
+        logger.error('Executor', `Failed to load standard library: ${e.message}`);
       }
+    } else {
+      logger.warn('Executor', 'Standard library code or parser not available');
     }
   }
   run(ast){
+    logger.info('Executor', 'Starting program execution');
+    
     this.ast = ast;
     this.env.instances.clear();
     this.env.displayFns = null;
@@ -886,9 +1455,20 @@ class Executor {
     // Load standard library spindles first
     this.loadStandardLibrary();
 
+    // Register user-defined spindles
+    let userSpindleCount = 0;
     for(const s of ast.body){
-      if(s.type==="SpindleDef") this.env.spindles.set(s.name, s);
+      if(s.type==="SpindleDef") {
+        this.env.spindles.set(s.name, s);
+        userSpindleCount++;
+        logger.debug('Executor', `Registered user spindle: ${s.name}`, { 
+          params: s.params, 
+          outputs: s.outs 
+        });
+      }
     }
+    
+    logger.info('Executor', `Registered ${userSpindleCount} user spindles`);
     for(const s of ast.body){
       if(s.type==="SpindleDef") continue;
       if(s.type==="Direct"){
@@ -960,47 +1540,100 @@ class Executor {
         continue;
       }
       if(s.type==="Display"){
+        logger.info('Display', `Processing display statement with ${s.args.length} arguments`);
         let fr, fg, fb;
 
         if(s.args.length === 1) {
-          // Check if single argument is an instance with exactly 3 outputs
+          // Check if single argument is an instance with outputs
           const arg = s.args[0];
           if(arg.type === "Var") {
             const inst = this.env.instances.get(arg.name);
             if(inst && inst.outs) {
               const outputs = Object.keys(inst.outs);
-              if(outputs.length === 3) {
-                // Use the 3 outputs in order for r,g,b
-                fr = (me, env) => inst.outs[outputs[0]].evalAt(me, env);
-                fg = (me, env) => inst.outs[outputs[1]].evalAt(me, env);
-                fb = (me, env) => inst.outs[outputs[2]].evalAt(me, env);
+              logger.info('Display', `Instance '${arg.name}' has outputs: [${outputs.join(', ')}]`);
+              
+              if(outputs.length >= 3) {
+                // Use the first 3 outputs for r,g,b
+                const [rOut, gOut, bOut] = outputs;
+                logger.info('Display', `Mapping: r=${rOut}, g=${gOut}, b=${bOut}`);
+                
+                fr = (me, env) => {
+                  const strand = inst.outs[rOut];
+                  return strand && strand.evalAt ? strand.evalAt(me, env) : (typeof strand === 'function' ? strand(me, env) : strand);
+                };
+                fg = (me, env) => {
+                  const strand = inst.outs[gOut];
+                  return strand && strand.evalAt ? strand.evalAt(me, env) : (typeof strand === 'function' ? strand(me, env) : strand);
+                };
+                fb = (me, env) => {
+                  const strand = inst.outs[bOut];
+                  return strand && strand.evalAt ? strand.evalAt(me, env) : (typeof strand === 'function' ? strand(me, env) : strand);
+                };
+              } else if(outputs.length === 1) {
+                // Single output - use for all three channels (grayscale)
+                const singleOut = outputs[0];
+                logger.info('Display', `Single output '${singleOut}' - using as grayscale`);
+                
+                const getSingleValue = (me, env) => {
+                  const strand = inst.outs[singleOut];
+                  return strand && strand.evalAt ? strand.evalAt(me, env) : (typeof strand === 'function' ? strand(me, env) : strand);
+                };
+                fr = fg = fb = getSingleValue;
               } else {
-                throw new RuntimeError(`Instance '${arg.name}' must have exactly 3 outputs for single-argument display, found ${outputs.length}`);
+                const error = `Instance '${arg.name}' has ${outputs.length} outputs - need at least 1 or exactly 3 for display`;
+                logger.error('Display', error);
+                throw new RuntimeError(error);
               }
             } else {
-              throw new RuntimeError(`Unknown instance '${arg.name}' for display`);
+              const error = `Unknown instance '${arg.name}' for display`;
+              logger.error('Display', error);
+              throw new RuntimeError(error);
             }
           } else {
-            throw new RuntimeError("Single argument display requires an instance name");
+            const error = "Single argument display requires an instance name";
+            logger.error('Display', error);
+            throw new RuntimeError(error);
           }
         } else if(s.args.length === 3) {
           // Original 3-argument behavior
+          logger.info('Display', 'Using 3 separate expressions for r,g,b');
           fr = compileExprOptimized(s.args[0], this.env);
           fg = compileExprOptimized(s.args[1], this.env);
           fb = compileExprOptimized(s.args[2], this.env);
         } else {
-          throw new RuntimeError("display needs either 1 instance with 3 outputs or 3 expressions (r,g,b)");
+          const error = `display needs either 1 instance or 3 expressions, got ${s.args.length} arguments`;
+          logger.error('Display', error);
+          throw new RuntimeError(error);
         }
 
         this.env.displayFns = [fr, fg, fb];
+        logger.info('Display', 'Display functions configured successfully');
         continue;
       }
       if(s.type==="EnvStmt"){
+        console.log('Processing EnvStmt:', s.field, s.expr);
         if(s.field === "frames") {
           const valueExpr = compileExprOptimized(s.expr, this.env);
           // Evaluate the expression to get the target fps
           const fps = toScalar(valueExpr({}, this.env));
           this.env.targetFps = Math.max(1, Math.min(120, fps)); // Clamp between 1-120 fps
+          console.log('Set target FPS to:', this.env.targetFps);
+        }
+        if(s.field === "width") {
+          const valueExpr = compileExprOptimized(s.expr, this.env);
+          // Evaluate the expression to get the target width
+          const width = toScalar(valueExpr({}, this.env));
+          // Use reasonable limits - WebGL usually supports up to 16384 but let's be conservative
+          this.env.resW = Math.max(1, Math.min(8192, Math.floor(width)));
+          console.log('Set width to:', this.env.resW);
+        }
+        if(s.field === "height") {
+          const valueExpr = compileExprOptimized(s.expr, this.env);
+          // Evaluate the expression to get the target height
+          const height = toScalar(valueExpr({}, this.env));
+          // Use reasonable limits - WebGL usually supports up to 16384 but let's be conservative
+          this.env.resH = Math.max(1, Math.min(8192, Math.floor(height)));
+          console.log('Set height to:', this.env.resH);
         }
         continue;
       }
@@ -1014,3 +1647,4 @@ window.Env = Env;
 window.Executor = Executor;
 window.clamp = clamp;
 window.isNum = isNum;
+window.logger = logger;
