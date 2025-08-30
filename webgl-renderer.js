@@ -289,7 +289,7 @@ class WebGLRenderer {
     }
     
     // Process Direct statements (variable definitions)
-    for (const stmt of program.body) {
+    for (const stmt of program.statements) {
       if (stmt.type === 'Direct') {
         logger.debug('WebGL', `Processing Direct: ${stmt.name}`, { outputs: stmt.outs });
         

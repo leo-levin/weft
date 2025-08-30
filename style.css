@@ -596,3 +596,74 @@ code { color: #cbd5e1; }
     gap: 8px;
   }
 }
+
+/* Canvas tabs styling */
+#canvasTabs {
+  display: flex;
+  background: #15161f;
+  border-bottom: 1px solid #212534;
+  padding: 0 12px;
+}
+
+.canvas-tab {
+  font-size: 11px;
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  color: #9aa4b2;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+  transition: all 0.2s ease;
+  font-weight: 500;
+  text-align: center;
+  border-bottom: 2px solid transparent;
+  position: relative;
+  z-index: 10;
+}
+
+.canvas-tab.active {
+  background: linear-gradient(135deg, #7aa2ff 0%, #6691e6 100%);
+  color: #ffffff;
+  font-weight: 600;
+  border-bottom: 2px solid #7aa2ff;
+}
+
+.canvas-tab:hover:not(.active) {
+  background: #1f2432;
+  color: #e8ecf1;
+}
+
+#canvasTabContent {
+  height: calc(100% - 40px);
+  overflow: hidden;
+}
+
+.canvas-tab-pane {
+  visibility: hidden;
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+}
+
+.canvas-tab-pane.active {
+  visibility: visible;
+  position: relative;
+}
+
+#astPane {
+  background: #0a0b0e;
+  overflow-y: auto;
+}
+
+#astViewer {
+  color: #e8ecf1;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 16px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}

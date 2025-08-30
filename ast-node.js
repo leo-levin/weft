@@ -216,29 +216,119 @@ class Assignment extends ASTNode {
   }
 }
 
+class NamedArg extends ASTNode {
+  constructor(name, value) {
+    super('NamedArg');
+    this.name = name;
+    this.value = value;
+  }
+
+  getChildren() {
+    return [this.value];
+  }
+}
+
 class DisplayStmt extends ASTNode {
   constructor(args) {
     super('DisplayStmt');
     this.args = args;
-    this.parameters = this.parseDisplayParams(args);
+    this.namedArgs = new Map();
+    this.positionalArgs = [];
+    this.parameters = {};
+    this.parseArgs(args);
   }
 
   getChildren() {
     return this.args;
   }
 
-  parseDisplayParams(args) {
-    // Parse named arguments in display statements
-    // e.g. display(r: red, g: green, b: blue, width: 800, height: 600)
-    const params = {};
+  parseArgs(args) {
     args.forEach(arg => {
-      // This is a simplified version - actual implementation would need
-      // to handle the named argument parsing from the display syntax
       if (arg.type === 'NamedArg') {
-        params[arg.name] = arg.value;
+        this.namedArgs.set(arg.name, arg.value);
+        this.parameters[arg.name] = arg.value;
+      } else {
+        this.positionalArgs.push(arg);
       }
     });
-    return params;
+  }
+}
+
+class RenderStmt extends ASTNode {
+  constructor(args) {
+    super('RenderStmt');
+    this.args = args;
+    this.namedArgs = new Map();
+    this.positionalArgs = [];
+    this.parameters = {};
+    this.parseArgs(args);
+  }
+
+  getChildren() {
+    return this.args;
+  }
+
+  parseArgs(args) {
+    args.forEach(arg => {
+      if (arg.type === 'NamedArg') {
+        this.namedArgs.set(arg.name, arg.value);
+        this.parameters[arg.name] = arg.value;
+      } else {
+        this.positionalArgs.push(arg);
+      }
+    });
+  }
+}
+
+class PlayStmt extends ASTNode {
+  constructor(args) {
+    super('PlayStmt');
+    this.args = args;
+    this.namedArgs = new Map();
+    this.positionalArgs = [];
+    this.parameters = {};
+    this.parseArgs(args);
+  }
+
+  getChildren() {
+    return this.args;
+  }
+
+  parseArgs(args) {
+    args.forEach(arg => {
+      if (arg.type === 'NamedArg') {
+        this.namedArgs.set(arg.name, arg.value);
+        this.parameters[arg.name] = arg.value;
+      } else {
+        this.positionalArgs.push(arg);
+      }
+    });
+  }
+}
+
+class ComputeStmt extends ASTNode {
+  constructor(args) {
+    super('ComputeStmt');
+    this.args = args;
+    this.namedArgs = new Map();
+    this.positionalArgs = [];
+    this.parameters = {};
+    this.parseArgs(args);
+  }
+
+  getChildren() {
+    return this.args;
+  }
+
+  parseArgs(args) {
+    args.forEach(arg => {
+      if (arg.type === 'NamedArg') {
+        this.namedArgs.set(arg.name, arg.value);
+        this.parameters[arg.name] = arg.value;
+      } else {
+        this.positionalArgs.push(arg);
+      }
+    });
   }
 }
 
@@ -299,7 +389,11 @@ if (typeof module !== 'undefined' && module.exports) {
     IfExpr,
     LetBinding,
     Assignment,
+    NamedArg,
     DisplayStmt,
+    RenderStmt,
+    PlayStmt,
+    ComputeStmt,
     SpindleDef,
     InstanceBinding,
     Program
@@ -322,7 +416,11 @@ if (typeof module !== 'undefined' && module.exports) {
     IfExpr,
     LetBinding,
     Assignment,
+    NamedArg,
     DisplayStmt,
+    RenderStmt,
+    PlayStmt,
+    ComputeStmt,
     SpindleDef,
     InstanceBinding,
     Program

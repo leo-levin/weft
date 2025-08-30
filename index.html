@@ -58,21 +58,33 @@
     </div>
   </div>
   <div id="right">
-    <div id="canvasWrap">
-      <canvas id="out" width="160" height="90"></canvas>
-      <div id="rgbDisplay">RGB: —, —, —</div>
-      <div id="stats">
+    <div id="canvasTabs">
+      <button class="canvas-tab active" data-tab="canvas">Canvas</button>
+      <button class="canvas-tab" data-tab="ast">AST</button>
+    </div>
+    <div id="canvasTabContent">
+      <div id="canvasPane" class="canvas-tab-pane active">
+        <div id="canvasWrap">
+          <canvas id="out" width="160" height="90"></canvas>
+          <div id="rgbDisplay">RGB: —, —, —</div>
+          <div id="stats">
+          </div>
+        </div>
+      </div>
+      <div id="astPane" class="canvas-tab-pane">
+        <pre id="astViewer"></pre>
       </div>
     </div>
   </div>
 </div>
 
 <script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js"></script>
+<script src="ast-node.js"></script>
 <script src="parser.js"></script>
+<script src="tagging.js"></script>
 <script src="runtime.js"></script>
 <script src="renderer.js"></script>
 <script src="webgl-renderer.js"></script>
-<script src="simple-highlighter.js"></script>
 <script src="main.js"></script>
 </body>
 </html>

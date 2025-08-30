@@ -1457,7 +1457,7 @@ class Executor {
 
     // Register user-defined spindles
     let userSpindleCount = 0;
-    for(const s of ast.body){
+    for(const s of ast.statements){
       if(s.type==="SpindleDef") {
         this.env.spindles.set(s.name, s);
         userSpindleCount++;
@@ -1469,7 +1469,7 @@ class Executor {
     }
     
     logger.info('Executor', `Registered ${userSpindleCount} user spindles`);
-    for(const s of ast.body){
+    for(const s of ast.statements){
       if(s.type==="SpindleDef") continue;
       if(s.type==="Direct"){
         const fx = compileExprOptimized(s.expr, this.env);
@@ -1610,6 +1610,59 @@ class Executor {
         logger.info('Display', 'Display functions configured successfully');
         continue;
       }
+      if(s.type==="RenderStmt"){
+        logger.info('RenderStmt', `Processing render statement with ${s.args.length} arguments`);
+        // Handle RenderStmt the same way as Display for now
+        let fr, fg, fb;
+
+        if(s.args.length === 1) {
+          // Check if single argument is an instance with outputs
+          const arg = s.args[0];
+          if(arg.type === "Var") {
+            const inst = this.env.instances.get(arg.name);
+            if(inst && inst.outs) {
+              const outputs = Object.keys(inst.outs);
+              logger.info('RenderStmt', `Instance '${arg.name}' has outputs: [${outputs.join(', ')}]`);
+              
+              if(outputs.length >= 3) {
+                // Use the first 3 outputs for r,g,b
+                const [rOut, gOut, bOut] = outputs;
+                logger.info('RenderStmt', `Mapping: r=${rOut}, g=${gOut}, b=${bOut}`);
+                fr = compileExprOptimized({type: "StrandAccess", base: arg, out: rOut}, this.env);
+                fg = compileExprOptimized({type: "StrandAccess", base: arg, out: gOut}, this.env);
+                fb = compileExprOptimized({type: "StrandAccess", base: arg, out: bOut}, this.env);
+              } else {
+                logger.warn('RenderStmt', `Instance '${arg.name}' has insufficient outputs for r,g,b`);
+                fr = fg = fb = () => 0;
+              }
+            } else {
+              // Single expression
+              const compiledExpr = compileExprOptimized(arg, this.env);
+              fr = fg = fb = compiledExpr;
+            }
+          } else {
+            // Single expression
+            const compiledExpr = compileExprOptimized(arg, this.env);
+            fr = fg = fb = compiledExpr;
+          }
+        } else if(s.args.length >= 3) {
+          fr = compileExprOptimized(s.args[0], this.env);
+          fg = compileExprOptimized(s.args[1], this.env);
+          fb = compileExprOptimized(s.args[2], this.env);
+        }
+
+        this.env.displayFns = [fr, fg, fb];
+        logger.info('RenderStmt', 'Render functions configured successfully');
+        continue;
+      }
+      if(s.type==="PlayStmt"){
+        logger.info('PlayStmt', `Processing play statement with ${s.args.length} arguments - not implemented yet`);
+        continue;
+      }
+      if(s.type==="ComputeStmt"){
+        logger.info('ComputeStmt', `Processing compute statement with ${s.args.length} arguments - not implemented yet`);
+        continue;
+      }
       if(s.type==="EnvStmt"){
         console.log('Processing EnvStmt:', s.field, s.expr);
         if(s.field === "frames") {
@@ -1639,7 +1692,7 @@ class Executor {
       }
       throw new RuntimeError(`Unhandled statement type ${s.type}`);
     }
-    if(!this.env.displayFns) throw new RuntimeError("No display(...) statement found.");
+    if(!this.env.displayFns) throw new RuntimeError("No render(...) or display(...) statement found.");
   }
 }
 

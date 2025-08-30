@@ -16,6 +16,88 @@ const executor = new Executor(env);
 // Initialize renderer - will be set up after all scripts load
 let renderer;
 
+// Function to update AST viewer with clean, formatted JSON
+function updateASTViewer(ast) {
+  const astViewer = document.getElementById('astViewer');
+  if (astViewer) {
+    try {
+      // Clean AST by removing noise properties
+      const cleanAST = cleanASTForDisplay(ast);
+      const astString = JSON.stringify(cleanAST, null, 2);
+      astViewer.textContent = astString;
+    } catch (error) {
+      astViewer.textContent = `Error displaying AST: ${error.message}`;
+    }
+  }
+}
+
+// Remove routing metadata and other noise for cleaner display
+function cleanASTForDisplay(node) {
+  if (!node || typeof node !== 'object') return node;
+
+  if (Array.isArray(node)) {
+    return node.map(item => cleanASTForDisplay(item));
+  }
+
+  const cleaned = {};
+
+  // Always include type
+  if (node.type) cleaned.type = node.type;
+
+  // Include key properties based on node type
+  if (node.type === 'Program') {
+    cleaned.statements = cleanASTForDisplay(node.statements);
+  } else if (node.type === 'RenderStmt' || node.type === 'PlayStmt' || node.type === 'ComputeStmt') {
+    cleaned.args = cleanASTForDisplay(node.args);
+    if (node.namedArgs && Object.keys(node.namedArgs).length > 0) {
+      cleaned.namedArgs = cleanASTForDisplay(node.namedArgs);
+    }
+  } else if (node.type === 'Me') {
+    cleaned.field = node.field;
+  } else if (node.type === 'Mouse') {
+    cleaned.field = node.field;
+  } else if (node.type === 'Num') {
+    cleaned.value = node.v;
+  } else if (node.type === 'Str') {
+    cleaned.value = node.v;
+  } else if (node.type === 'Var') {
+    cleaned.name = node.name;
+  } else if (node.type === 'Bin') {
+    cleaned.op = node.op;
+    cleaned.left = cleanASTForDisplay(node.left);
+    cleaned.right = cleanASTForDisplay(node.right);
+  } else if (node.type === 'Unary') {
+    cleaned.op = node.op;
+    cleaned.expr = cleanASTForDisplay(node.expr);
+  } else if (node.type === 'Call') {
+    cleaned.name = node.name;
+    cleaned.args = cleanASTForDisplay(node.args);
+  } else if (node.type === 'Let') {
+    cleaned.name = node.name;
+    cleaned.expr = cleanASTForDisplay(node.expr);
+  } else {
+    // For other node types, include common properties
+    Object.keys(node).forEach(key => {
+      if (key !== 'id' && key !== 'positionalArgs' && key !== 'parameters') {
+        cleaned[key] = cleanASTForDisplay(node[key]);
+      }
+    });
+  }
+
+  // Add route information if present (after tagging)
+  if (node.routes && node.routes.size > 0) {
+    cleaned.routes = Array.from(node.routes);
+  }
+  if (node.primaryRoute) {
+    cleaned.primaryRoute = node.primaryRoute;
+  }
+  if (node.crossContext) {
+    cleaned.crossContext = node.crossContext;
+  }
+
+  return cleaned;
+}
+
 function initializeRenderer() {
   const useWebGL = true; // Re-enabling - it's working better than expected!
 
@@ -163,14 +245,21 @@ function runCode(){
 
     const ast = Parser.parse(src);
     window.logger && window.logger.info('Main', 'AST parsed successfully', {
-      statements: ast.body.length,
-      types: ast.body.map(s => s.type)
+      statements: ast.statements.length,
+      types: ast.statements.map(s => s.type)
     });
+
+    // Tag AST with execution routes (render→gpu, play→audio, compute→cpu)
+    window.RouteTagging.tagExpressionRoutes(ast);
+    window.logger && window.logger.info('Main', 'Route tagging completed');
+
+    // Update AST viewer (after tagging so route info is included)
+    updateASTViewer(ast);
 
     // Store ASTs for WebGL compiler
     env.currentProgram = ast;
-    for (const stmt of ast.body) {
-      if (stmt.type === 'Display') {
+    for (const stmt of ast.statements) {
+      if (stmt.type === 'RenderStmt' || stmt.type === 'DisplayStmt') {
         env.displayAst = stmt;
         break;
       }
@@ -191,6 +280,13 @@ function runCode(){
   } catch (e){
     const errorMsg = (e && e.message) ? e.message : String(e);
     errorsEl.textContent = errorMsg;
+
+    // Clear AST viewer on error
+    const astViewer = document.getElementById('astViewer');
+    if (astViewer) {
+      astViewer.textContent = `Parse Error: ${errorMsg}`;
+    }
+
     window.logger && window.logger.error('Main', 'Program execution failed', {
       error: errorMsg,
       stack: e.stack
@@ -274,6 +370,55 @@ function initDebugPanel() {
           pane.classList.add('active');
         }
       });
+    });
+  });
+
+  // Canvas tabs
+  const canvasTabs = document.querySelectorAll('.canvas-tab');
+  const canvasTabPanes = document.querySelectorAll('.canvas-tab-pane');
+
+  console.log('Canvas tabs found:', canvasTabs.length);
+  console.log('Canvas panes found:', canvasTabPanes.length);
+
+  canvasTabs.forEach((tab, index) => {
+    console.log(`Setting up tab ${index}:`, tab.textContent, tab.dataset.tab);
+    tab.addEventListener('click', (e) => {
+      console.log('Canvas tab clicked:', tab.textContent);
+      const targetTab = tab.dataset.tab;
+
+      // Update active tab
+      canvasTabs.forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+
+      // Update active pane
+      canvasTabPanes.forEach(pane => {
+        pane.classList.remove('active');
+        if (pane.id === targetTab + 'Pane') {
+          pane.classList.add('active');
+          console.log('Activated pane:', pane.id);
+        }
+      });
+
+      // Handle canvas tab switching specifically
+      if (targetTab === 'canvas' && renderer) {
+        console.log('Switching to canvas tab, renderer status:', {
+          hasRenderer: !!renderer,
+          rendererType: renderer.constructor.name,
+          isRunning: renderer.isRunning || 'unknown'
+        });
+
+        setTimeout(() => {
+          console.log('Attempting to restart renderer after tab switch');
+          try {
+            // Force renderer restart
+            if (renderer.stop) renderer.stop();
+            if (renderer.start) renderer.start();
+            console.log('Renderer restart completed');
+          } catch (error) {
+            console.error('Error restarting renderer:', error);
+          }
+        }, 50);
+      }
     });
   });
 

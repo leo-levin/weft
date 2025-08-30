@@ -1,9 +1,9 @@
 (() => {
-  // Import ASTNode classes
   const {
     ASTNode, BinaryExpr, UnaryExpr, CallExpr, VarExpr, NumExpr, StrExpr,
     MeExpr, MouseExpr, TupleExpr, IndexExpr, StrandAccessExpr, IfExpr,
-    LetBinding, Assignment, DisplayStmt, SpindleDef, InstanceBinding, Program
+    LetBinding, Assignment, NamedArg, DisplayStmt, RenderStmt, PlayStmt, ComputeStmt,
+    SpindleDef, InstanceBinding, Program
   } = typeof window !== 'undefined' ? window.ASTNodes : require('../ast/ast-node.js');
   const externalEl = typeof document !== 'undefined' && document.getElementById('weft-grammar');
   const externalSrc = externalEl ? externalEl.textContent : null;
@@ -33,8 +33,14 @@ Weft {
   AssignOp = sym<"="> | sym<"+="> | sym<"-="> | sym<"*="> | sym<"/=">
   EnvAssignment = kw<"me"> sym<"."> ident sym<"==="> Expr
 
-  SideEffect = DisplayStmt
-  DisplayStmt = kw<"display"> sym<"("> ListOf<Expr, ","> sym<")">
+  SideEffect = RenderStmt | PlayStmt | ComputeStmt
+  
+  RenderStmt = kw<"render"> sym<"("> ListOf<StmtArg, ","> sym<")">
+  PlayStmt = kw<"play"> sym<"("> ListOf<StmtArg, ","> sym<")">
+  ComputeStmt = kw<"compute"> sym<"("> ListOf<StmtArg, ","> sym<")">
+
+  StmtArg = ident sym<":"> Expr  -- named
+          | Expr                 -- positional
 
   Block = sym<"{"> BlockStatement* sym<"}">
   BlockStatement = LetBinding | Assignment | ForLoop
@@ -79,7 +85,7 @@ Weft {
   ident = ~keyword letter identRest* space*
   identRest = letter | digit | "_"
   keyword = "spindle" | "if" | "then" | "else" | "not" | "and" | "or"
-          | "display" | "let" | "for" | "in" | "to" | "me" | "mouse"
+          | "render" | "play" | "compute" | "let" | "for" | "in" | "to" | "me" | "mouse"
 
   number = numCore space*
   numCore = digit+ "." digit* expPart?    -- d1
@@ -109,7 +115,7 @@ Weft {
 
   const sem = g.createSemantics().addOperation('ast', {
     Program(stmts) {
-      return { type: 'Program', body: stmts.children.map(s => s.ast()) };
+      return new Program(stmts.children.map(s => s.ast()));
     },
 
     // Use Ohm's built-in ListOf handling
@@ -173,8 +179,24 @@ Weft {
     },
 
     // Side Effects
-    DisplayStmt(_kw, _lp, args, _rp) {
-      return { type: 'Display', args: args.ast() };
+    RenderStmt(_kw, _lp, args, _rp) {
+      return new RenderStmt(args.ast());
+    },
+
+    PlayStmt(_kw, _lp, args, _rp) {
+      return new PlayStmt(args.ast());
+    },
+
+    ComputeStmt(_kw, _lp, args, _rp) {
+      return new ComputeStmt(args.ast());
+    },
+
+    StmtArg_named(name, _colon, expr) {
+      return new NamedArg(name.ast(), expr.ast());
+    },
+
+    StmtArg_positional(expr) {
+      return expr.ast();
     },
 
     // Output Specifications
