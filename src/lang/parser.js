@@ -30,6 +30,7 @@ Weft {
   LetBinding = kw<"let"> ident sym<"="> Expr
   InstanceBinding = ident space* OutputSpec space* sym<"="> space* Expr  -- direct
                   | ident sym<"("> ListOf<Expr, ","> sym<")"> sym<"::"> ident OutputSpec -- call
+                  | ident sym<"<"> digit+ sym<">"> sym<"("> ListOf<BundleOrExpr, ","> sym<")"> sym<"::"> ident OutputSpec -- multiCall
 
   Mutation = Assignment | EnvAssignment
   Assignment = ident AssignOp Expr
@@ -37,7 +38,7 @@ Weft {
   EnvAssignment = kw<"me"> sym<"."> ident sym<"==="> Expr
 
   SideEffect = RenderStmt | PlayStmt | ComputeStmt
-  
+
   RenderStmt = kw<"render"> sym<"("> ListOf<StmtArg, ","> sym<")">
   PlayStmt = kw<"play"> sym<"("> ListOf<StmtArg, ","> sym<")">
   ComputeStmt = kw<"compute"> sym<"("> ListOf<StmtArg, ","> sym<")">
@@ -49,7 +50,10 @@ Weft {
   BlockStatement = LetBinding | Assignment | ForLoop
   ForLoop = kw<"for"> ident kw<"in"> sym<"("> Expr kw<"to"> Expr sym<")"> Block
 
-  OutputSpec = sym<"<"> ListOf<ident, ","> sym<">">
+  OutputSpec = sym<"<"> ListOf<ident, ","> sym<">">  
+
+  BundleOrExpr = sym<"<"> ListOf<Expr, ","> sym<">">  -- bundle
+               | Expr                                 -- regular
 
   Expr = IfExpr | LogicalExpr
   IfExpr = kw<"if"> Expr kw<"then"> Expr kw<"else"> Expr
@@ -66,7 +70,7 @@ Weft {
   AddExpr = AddExpr AddOp MulExpr  -- addsub
           | MulExpr
   MulExpr = MulExpr MulOp PowerExpr  -- muldiv
-          | PowerExpr  
+          | PowerExpr
   PowerExpr = UnaryExpr sym<"^"> PowerExpr  -- power
             | UnaryExpr
   AddOp = sym<"+"> | sym<"-">
@@ -81,6 +85,7 @@ Weft {
               | PrimaryExpr sym<"["> Expr sym<"]">              -- index
               | ident sym<"@"> ident                            -- strand
               | ident sym<"("> ListOf<Expr, ","> sym<")">       -- call
+              | sym<"<"> ListOf<Expr, ","> sym<">">             -- bundle
               | kw<"me"> sym<"."> ident                         -- env
               | kw<"mouse"> sym<"@"> ident                      -- mouse
               | ident                                           -- var
@@ -126,23 +131,23 @@ try {
 function extractPragmas(sourceCode) {
   const pragmas = [];
   const lines = sourceCode.split('\n');
-  
+
   lines.forEach((line, lineNum) => {
     const pragmaMatch = line.match(/^#(\w+)\s*(.*)/);
     if (pragmaMatch) {
       const [, type, body] = pragmaMatch;
       const pragma = { type, body: body.trim(), line: lineNum + 1 };
-      
+
       // Parse pragma body based on type
       if (type === 'slider') {
         console.log(`🔍 Parsing slider pragma body: "${body}"`);
-        // Updated regex to use = instead of : 
+        // Updated regex to use = instead of :
         const sliderMatch = body.match(/(\w+)<(.+?)>\s*=\s*([0-9.,\s]+)\s+"(.+?)"/);
         console.log('🎯 Slider match result:', sliderMatch);
-        
+
         if (sliderMatch) {
           const [, name, strands, rangeStr, label] = sliderMatch;
-          
+
           // Parse range - handle both "0.1,5.0" and "0..1"
           let range;
           if (rangeStr.includes('..')) {
@@ -152,16 +157,16 @@ function extractPragmas(sourceCode) {
           } else {
             range = [0, parseFloat(rangeStr.trim())];
           }
-          
+
           console.log(`📊 Parsed range from "${rangeStr}":`, range);
-          
+
           pragma.config = {
             name,
             strands: strands.split(',').map(s => s.trim()).filter(s => s.length > 0),
             range,
             label
           };
-          
+
           console.log('✅ Parsed slider config:', pragma.config);
         } else {
           console.log('❌ Slider pragma did not match regex');
@@ -170,7 +175,7 @@ function extractPragmas(sourceCode) {
         console.log(`🎨 Parsing color pragma body: "${body}"`);
         const colorMatch = body.match(/(\w+)<(.+?)>\s*=\s*"(.+?)"/);
         console.log('🎯 Color match result:', colorMatch);
-        
+
         if (colorMatch) {
           const [, name, strands, label] = colorMatch;
           pragma.config = {
@@ -187,14 +192,14 @@ function extractPragmas(sourceCode) {
         console.log(`📐 Parsing xy pragma body: "${body}"`);
         const xyMatch = body.match(/(\w+)<(.+?)>\s*=\s*\(([0-9.,\s]+)\),\s*\(([0-9.,\s]+)\)\s+"(.+?)"/);
         console.log('🎯 XY match result:', xyMatch);
-        
+
         if (xyMatch) {
           const [, name, strands, xRange, yRange, label] = xyMatch;
-          
+
           // Parse X and Y ranges
           const xRangeParts = xRange.split(',').map(r => parseFloat(r.trim()));
           const yRangeParts = yRange.split(',').map(r => parseFloat(r.trim()));
-          
+
           pragma.config = {
             name,
             strands: strands.split(',').map(s => s.trim()).filter(s => s.length > 0),
@@ -211,7 +216,7 @@ function extractPragmas(sourceCode) {
         console.log(`🔘 Parsing toggle pragma body: "${body}"`);
         const toggleMatch = body.match(/(\w+)<(.+?)>\s*=\s*(true|false)\s+"(.+?)"/);
         console.log('🎯 Toggle match result:', toggleMatch);
-        
+
         if (toggleMatch) {
           const [, name, strands, defaultVal, label] = toggleMatch;
           pragma.config = {
@@ -231,17 +236,27 @@ function extractPragmas(sourceCode) {
           pragma.config = { name, output };
         }
       }
-      
+
       pragmas.push(pragma);
     }
   });
-  
+
   return pragmas;
 }
 
 const sem = g.createSemantics().addOperation('ast', {
   Program(stmts) {
-    return new Program(stmts.children.map(s => s.ast()));
+    // Flatten any MultiCallExpanded nodes into individual statements
+    const flattened = [];
+    for (const stmt of stmts.children) {
+      const ast = stmt.ast();
+      if (ast.type === 'MultiCallExpanded') {
+        flattened.push(...ast.statements);
+      } else {
+        flattened.push(ast);
+      }
+    }
+    return new Program(flattened);
   },
 
   // Use Ohm's built-in ListOf handling
@@ -281,12 +296,100 @@ const sem = g.createSemantics().addOperation('ast', {
     },
 
     InstanceBinding_call(func, _lp, args, _rp, _dc, inst, outputs) {
+      const parsedArgs = args.ast();
+      const outputStrands = outputs.ast();
+      
+      // Expand bundles in arguments and auto-expand instances to strands
+      const expandedArgs = [];
+      for (const arg of parsedArgs) {
+        if (arg.type === 'Bundle') {
+          // Bundle expands inline to its items
+          expandedArgs.push(...arg.items);
+        } else if (arg.type === 'Var') {
+          // Smart instance expansion: if we have multiple output strands,
+          // expand the instance variable to strand accesses
+          if (outputStrands.length > 1) {
+            // Expand instance to strand accesses matching output strands
+            for (const strandName of outputStrands) {
+              expandedArgs.push({
+                type: 'StrandAccess',
+                base: { type: 'Var', name: arg.name },
+                out: strandName
+              });
+            }
+          } else {
+            // Single output - keep as variable
+            expandedArgs.push(arg);
+          }
+        } else {
+          expandedArgs.push(arg);
+        }
+      }
+      
       return {
         type: 'CallInstance',
         callee: func.ast(),
-        args: args.ast(),
+        args: expandedArgs,
         inst: inst.ast(),
-        outs: outputs.ast()
+        outs: outputStrands
+      };
+    },
+
+    InstanceBinding_multiCall(spindleName, _lt, countDigits, _gt, _lp, args, _rp, _dc, instName, outputs) {
+      const count = parseInt(countDigits.sourceString);
+      const parsedArgs = args.ast();
+      const outputStrands = outputs.ast();
+      
+      // Validate output count matches repetition count
+      if (outputStrands.length !== count) {
+        throw new Error(`Output bundle has ${outputStrands.length} strands, expected ${count} to match repetition count`);
+      }
+      
+      // Parse arguments - identify bundles vs regular args vs thread inputs
+      const argStructure = parsedArgs.map((arg, index) => {
+        if (arg.type === 'Bundle') {
+          if (arg.items.length !== count) {
+            throw new Error(`Bundle parameter ${index + 1} has ${arg.items.length} elements, expected ${count} to match repetition count`);
+          }
+          return { isBundle: true, items: arg.items };
+        } else if (arg.type === 'Var') {
+          // This might be a thread input - we'll expand it to strand accesses
+          return { isThread: true, threadName: arg.name, outputStrands: outputStrands };
+        }
+        return { isRegular: true, value: arg };
+      });
+      
+      // Generate individual CallInstance nodes
+      const statements = [];
+      for (let i = 0; i < count; i++) {
+        const expandedArgs = argStructure.map(arg => {
+          if (arg.isBundle) {
+            return arg.items[i];
+          } else if (arg.isThread) {
+            // Expand thread input to strand access: threadName@outputStrand[i]
+            return {
+              type: 'StrandAccess',
+              base: { type: 'Var', name: arg.threadName },
+              out: arg.outputStrands[i]
+            };
+          } else {
+            return arg.value;
+          }
+        });
+        
+        statements.push({
+          type: 'CallInstance',
+          callee: spindleName.ast(),
+          args: expandedArgs,
+          inst: instName.ast(),
+          outs: [outputStrands[i]]
+        });
+      }
+      
+      // Return a compound statement containing all expanded calls
+      return {
+        type: 'MultiCallExpanded',
+        statements: statements
       };
     },
 
@@ -400,7 +503,26 @@ const sem = g.createSemantics().addOperation('ast', {
     },
 
     PrimaryExpr_call(func, _lp, args, _rp) {
-      return { type: 'Call', name: func.ast(), args: args.ast() };
+      const parsedArgs = args.ast();
+      
+      // Expand bundles in expression call arguments
+      const expandedArgs = [];
+      for (const arg of parsedArgs) {
+        if (arg.type === 'Bundle') {
+          // Bundle expands inline to its items
+          expandedArgs.push(...arg.items);
+        } else {
+          // For expression calls, we don't auto-expand instances 
+          // since we don't have output context to infer strand count
+          expandedArgs.push(arg);
+        }
+      }
+      
+      return { type: 'Call', name: func.ast(), args: expandedArgs };
+    },
+
+    PrimaryExpr_bundle(_lt, items, _gt) {
+      return { type: 'Bundle', items: items.ast() };
     },
 
     PrimaryExpr_env(_me, _dot, field) {
@@ -413,6 +535,15 @@ const sem = g.createSemantics().addOperation('ast', {
 
     PrimaryExpr_var(name) {
       return { type: 'Var', name: name.ast() };
+    },
+
+    // Bundle expressions
+    BundleOrExpr_bundle(_lt, items, _gt) {
+      return { type: 'Bundle', items: items.ast() };
+    },
+
+    BundleOrExpr_regular(expr) {
+      return expr.ast();
     },
 
     // Terminals
@@ -439,13 +570,13 @@ class Parser {
     const m = g.match(src, 'Program');
     if (!m.succeeded()) throw new Error(m.message);
     const ast = sem(m).ast();
-    
+
     // Extract pragmas from source code
     const pragmas = extractPragmas(src);
-    
+
     // Attach pragmas to AST for runtime access
     ast.pragmas = pragmas;
-    
+
     return ast;
   }
 }
