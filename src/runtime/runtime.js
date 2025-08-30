@@ -395,9 +395,34 @@ function evalExprToStrand(node, env) {
 }
 
 // Legacy wrapper for backward compatibility
-function compileExpr(node, envRef){
-  const strand = evalExprToStrand(node, envRef);
-  return (me, env) => strand.evalAt(me, env);
+// Unified compilation function with multiple optimization levels
+function compile(node, env, options = {}) {
+  const { level = 'optimized', cache = true } = options;
+  
+  switch (level) {
+    case 'basic':
+      return compileBasic(node, env);
+    case 'fast':
+      return compileFast(node, env);
+    case 'optimized':
+    default:
+      return cache ? compileWithCache(node, env) : compileFast(node, env);
+  }
+}
+
+// Basic compilation using strand evaluation (most compatible)
+function compileBasic(node, env) {
+  const strand = evalExprToStrand(node, env);
+  return (me, envCtx) => strand.evalAt(me, envCtx);
+}
+
+// Legacy aliases for compatibility
+function compileExpr(node, envRef) {
+  return compile(node, envRef, { level: 'basic' });
+}
+
+function compileExprOptimized(node, envRef) {
+  return compile(node, envRef, { level: 'optimized' });
 }
 
 function toScalar(v){
@@ -476,9 +501,10 @@ const INLINE_OPS = {
 };
 
 // Ultra-optimized compiler - no string building, direct code generation
-function compileWeftFast(node, env, resolvedVars = new Map()) {
+// Compile AST node to JavaScript code
+function compileToJS(node, env, resolvedVars = new Map()) {
   if (Array.isArray(node)) {
-    return node.length === 1 ? compileWeftFast(node[0], env, resolvedVars) : '0';
+    return node.length === 1 ? compileToJS(node[0], env, resolvedVars) : '0';
   }
 
   switch(node.type) {
@@ -496,14 +522,14 @@ function compileWeftFast(node, env, resolvedVars = new Map()) {
     }
 
     case "Unary": {
-      const arg = compileWeftFast(node.expr, env, resolvedVars);
+      const arg = compileToJS(node.expr, env, resolvedVars);
       return node.op === "NOT" ? `(${arg}?0:1)` : node.op === "-" ? `(-${arg})` :
              BUILTIN_JS_MAP[node.op] ? `${BUILTIN_JS_MAP[node.op]}(${arg})` : `(-${arg})`;
     }
 
     case "Bin": {
-      const left = compileWeftFast(node.left, env, resolvedVars);
-      const right = compileWeftFast(node.right, env, resolvedVars);
+      const left = compileToJS(node.left, env, resolvedVars);
+      const right = compileToJS(node.right, env, resolvedVars);
       const op = node.op;
 
       if (op === "+") return `(${left}+${right})`;
@@ -524,15 +550,15 @@ function compileWeftFast(node, env, resolvedVars = new Map()) {
     }
 
     case "If": {
-      const cond = compileWeftFast(node.cond, env, resolvedVars);
-      const thenExpr = compileWeftFast(node.t, env, resolvedVars);
-      const elseExpr = compileWeftFast(node.e, env, resolvedVars);
+      const cond = compileToJS(node.cond, env, resolvedVars);
+      const thenExpr = compileToJS(node.t, env, resolvedVars);
+      const elseExpr = compileToJS(node.e, env, resolvedVars);
       return `(${cond}?${thenExpr}:${elseExpr})`;
     }
 
     case "Call": {
       const name = node.name;
-      const args = node.args.map(arg => compileWeftFast(arg, env, resolvedVars));
+      const args = node.args.map(arg => compileToJS(arg, env, resolvedVars));
 
       if (BUILTIN_JS_MAP[name]) {
         return `${BUILTIN_JS_MAP[name]}(${args.join(',')})`;
@@ -638,44 +664,52 @@ function createOptimizedFunction(jsCode, hasVars = false, hasInstances = false) 
   }
 }
 
-// Main optimized compiler with aggressive caching
-function compileWeftOptimized(node, env) {
+// Fast compilation with caching
+function compileWithCache(node, env) {
   const nodeId = getNodeId(node);
 
   if (compiledFunctionCache.has(nodeId)) {
     return compiledFunctionCache.get(nodeId);
   }
 
-  // Compile to lean JavaScript
-  const jsCode = compileWeftFast(node, env);
-  const hasVars = jsCode.includes('getVar');
-  const hasInstances = jsCode.includes('getInstance');
+  // Try fast compilation first
+  try {
+    const jsCode = compileToJS(node, env);
+    const hasVars = jsCode.includes('getVar');
+    const hasInstances = jsCode.includes('getInstance');
 
-  // Create ultra-optimized function
-  const compiledFn = createOptimizedFunction(jsCode, hasVars, hasInstances);
+    const compiledFn = createOptimizedFunction(jsCode, hasVars, hasInstances);
 
-  if (compiledFn) {
-    // Wrap with parameter injection for maximum speed
-    const optimizedWrapper = (me, env) => {
-      return compiledFn(me, env, me.x, me.y, me.t, me.frames, me.width, me.height,
-                       env.mouse.x, env.mouse.y);
-    };
-
-    compiledFunctionCache.set(nodeId, optimizedWrapper);
-    return optimizedWrapper;
+    if (compiledFn) {
+      const optimizedWrapper = (me, envCtx) => {
+        return compiledFn(me, envCtx, me.x, me.y, me.t, me.frames, me.width, me.height,
+                         envCtx.mouse.x, envCtx.mouse.y);
+      };
+      compiledFunctionCache.set(nodeId, optimizedWrapper);
+      return optimizedWrapper;
+    }
+  } catch (e) {
+    console.warn('Fast compilation failed, falling back to basic:', e.message);
   }
 
-  // Ultimate fallback
-  console.warn('Using slow interpreter fallback');
-  const strand = evalExprToStrand(node, env);
-  const fallbackFn = (me, env) => strand.evalAt(me, env);
+  // Fallback to basic compilation
+  const fallbackFn = compileBasic(node, env);
   compiledFunctionCache.set(nodeId, fallbackFn);
   return fallbackFn;
 }
 
-// Alias for compatibility
-function compileExprOptimized(node, envRef) {
-  return compileWeftOptimized(node, envRef);
+// Fast compilation without caching
+function compileFast(node, env) {
+  try {
+    const jsCode = compileToJS(node, env);
+    const compiledFn = createOptimizedFunction(jsCode);
+    if (compiledFn) {
+      return (me, envCtx) => compiledFn(me, envCtx, me.x, me.y, me.t, me.frames, me.width, me.height, envCtx.mouse.x, envCtx.mouse.y);
+    }
+  } catch (e) {
+    console.warn('Fast compilation failed:', e.message);
+  }
+  return compileBasic(node, env);
 }
 
 // Clear only when absolutely necessary
@@ -1412,15 +1446,20 @@ function compileSpindleBody(astBody, paramNames, outNames, argExprs, outerEnv){
 
 // Program executor
 class Executor {
-  constructor(env){ this.env = env; this.ast = null; }
+  constructor(env, parser = null, standardLibraryCode = null){ 
+    this.env = env; 
+    this.ast = null;
+    this.parser = parser;
+    this.standardLibraryCode = standardLibraryCode;
+  }
 
   loadStandardLibrary() {
     logger.info('Executor', 'Loading standard library');
     
     // Load standard library spindles if available
-    if (window.StandardLibraryCode && window.Parser) {
+    if (this.standardLibraryCode && this.parser) {
       try {
-        const stdlibAst = Parser.parse(window.StandardLibraryCode);
+        const stdlibAst = this.parser.parse(this.standardLibraryCode);
         let loadedCount = 0;
         
         for (const s of stdlibAst.body) {
@@ -1696,8 +1735,29 @@ class Executor {
   }
 }
 
-window.Env = Env;
-window.Executor = Executor;
-window.clamp = clamp;
-window.isNum = isNum;
-window.logger = logger;
+// Export using ES6 modules
+export {
+  Env,
+  Executor,
+  clamp,
+  isNum,
+  logger,
+  RuntimeError,
+  evalExprToStrand,
+  compile,
+  compileExpr, // Legacy alias
+  compileExprOptimized, // Legacy alias
+  evalSpindleCall,
+  BuiltinSpindles,
+  Sampler
+};
+
+// Temporary bridge for debugging - also expose to global scope
+if (typeof window !== 'undefined') {
+  window.Env = Env;
+  window.Executor = Executor;
+  window.clamp = clamp;
+  window.isNum = isNum;
+  window.logger = logger;
+  window.Sampler = Sampler;
+}

@@ -50,7 +50,7 @@ button:hover { border-color: var(--accent); }
   border: none;
   outline: none;
   background: transparent;
-  color: transparent;
+  color: #ffffff;
   padding: 10px;
   resize: none;
   font-size: 13px;

@@ -1,14 +1,17 @@
-(() => {
-  const {
-    ASTNode, BinaryExpr, UnaryExpr, CallExpr, VarExpr, NumExpr, StrExpr,
-    MeExpr, MouseExpr, TupleExpr, IndexExpr, StrandAccessExpr, IfExpr,
-    LetBinding, Assignment, NamedArg, DisplayStmt, RenderStmt, PlayStmt, ComputeStmt,
-    SpindleDef, InstanceBinding, Program
-  } = typeof window !== 'undefined' ? window.ASTNodes : require('../ast/ast-node.js');
-  const externalEl = typeof document !== 'undefined' && document.getElementById('weft-grammar');
-  const externalSrc = externalEl ? externalEl.textContent : null;
+import {
+  ASTNode, BinaryExpr, UnaryExpr, CallExpr, VarExpr, NumExpr, StrExpr,
+  MeExpr, MouseExpr, TupleExpr, IndexExpr, StrandAccessExpr, IfExpr,
+  LetBinding, Assignment, NamedArg, OutputStatement, DisplayStmt, RenderStmt, PlayStmt, ComputeStmt,
+  SpindleDef, InstanceBinding, Program
+} from '../ast/ast-node.js';
 
-  const fallbackGrammar = String.raw`
+// Access ohm from global scope (loaded via script tag)
+const ohm = window.ohm || globalThis.ohm;
+
+const externalEl = typeof document !== 'undefined' && document.getElementById('weft-grammar');
+const externalSrc = externalEl ? externalEl.textContent : null;
+
+const fallbackGrammar = String.raw`
 Weft {
   Program = Statement*
 
@@ -104,30 +107,30 @@ Weft {
 }
 `;
 
-  const grammarSrc = externalSrc && externalSrc.trim() ? externalSrc : fallbackGrammar;
-  let g;
-  try {
-    g = ohm.grammar(grammarSrc);
-  } catch (e) {
-    console.error('🧨 Ohm grammar parse error:', e.message);
-    throw e;
-  }
+const grammarSrc = externalSrc && externalSrc.trim() ? externalSrc : fallbackGrammar;
+let g;
+try {
+  g = ohm.grammar(grammarSrc);
+} catch (e) {
+  console.error('🧨 Ohm grammar parse error:', e.message);
+  throw e;
+}
 
-  const sem = g.createSemantics().addOperation('ast', {
-    Program(stmts) {
-      return new Program(stmts.children.map(s => s.ast()));
-    },
+const sem = g.createSemantics().addOperation('ast', {
+  Program(stmts) {
+    return new Program(stmts.children.map(s => s.ast()));
+  },
 
-    // Use Ohm's built-in ListOf handling
-    ListOf(items) {
-      return items.asIteration().children.map(c => c.ast());
-    },
-    EmptyListOf() {
-      return [];
-    },
-    NonemptyListOf(first, _sep, rest) {
-      return [first.ast(), ...rest.children.map(r => r.ast())];
-    },
+  // Use Ohm's built-in ListOf handling
+  ListOf(items) {
+    return items.asIteration().children.map(c => c.ast());
+  },
+  EmptyListOf() {
+    return [];
+  },
+  NonemptyListOf(first, _sep, rest) {
+    return [first.ast(), ...rest.children.map(r => r.ast())];
+  },
 
     // Definitions
     SpindleDef(_kw, name, _lp, params, _rp, _dc, outs, body) {
@@ -308,12 +311,17 @@ Weft {
     }
   });
 
-  class Parser {
-    static parse(src) {
-      const m = g.match(src, 'Program');
-      if (!m.succeeded()) throw new Error(m.message);
-      return sem(m).ast();
-    }
+class Parser {
+  static parse(src) {
+    const m = g.match(src, 'Program');
+    if (!m.succeeded()) throw new Error(m.message);
+    return sem(m).ast();
   }
+}
+
+export { Parser };
+
+// Temporary bridge - also expose to global scope
+if (typeof window !== 'undefined') {
   window.Parser = Parser;
-})();
+}

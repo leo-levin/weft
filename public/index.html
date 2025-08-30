@@ -79,12 +79,19 @@
 </div>
 
 <script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js"></script>
-<script src="ast-node.js"></script>
-<script src="parser.js"></script>
-<script src="tagging.js"></script>
-<script src="runtime.js"></script>
-<script src="renderer.js"></script>
-<script src="webgl-renderer.js"></script>
-<script src="main.js"></script>
+<!-- Load all modules individually for now to debug -->
+<script type="module" src="../src/ast/ast-node.js"></script>
+<script type="module" src="../src/lang/parser.js"></script>
+<script type="module" src="../src/lang/tagging.js"></script>
+<script type="module" src="../src/runtime/runtime.js"></script>
+<script type="module" src="../src/renderers/renderer.js"></script>
+<script type="module" src="../src/renderers/webgl-renderer.js"></script>
+<script type="module" src="../src/ui/main.js"></script>
+<script>
+  window.addEventListener('error', function(e) {
+    console.error('Global error:', e.error);
+    document.getElementById('errors').innerHTML = '<div style="color: red; padding: 10px; background: rgba(255,0,0,0.1); border-radius: 4px;">Module loading failed: ' + e.error.message + '<br>Check browser console for details.</div>';
+  });
+</script>
 </body>
 </html>

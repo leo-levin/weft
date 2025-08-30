@@ -1,3 +1,11 @@
+import { Parser } from '../lang/parser.js';
+import { tagExpressionRoutes } from '../lang/tagging.js';
+import { Env, Executor, clamp, isNum, logger, Sampler } from '../runtime/runtime.js';
+import { Renderer } from '../renderers/renderer.js';
+import { WebGLRenderer } from '../renderers/webgl-renderer.js';
+
+console.log('✅ Starting WEFT application...');
+
 const editor = document.getElementById('editor');
 // Ensure editor text is visible with white color, default background
 if (editor) {
@@ -11,7 +19,7 @@ const errorsEl = document.getElementById('errors');
 const canvas = document.getElementById('out');
 
 const env = new Env();
-const executor = new Executor(env);
+const executor = new Executor(env, Parser);
 
 // Initialize renderer - will be set up after all scripts load
 let renderer;
@@ -230,9 +238,7 @@ function runCode(){
   errorsEl.textContent = "";
 
   // Clear previous logs
-  if (window.logger) {
-    window.logger.clear();
-  }
+  logger.clear();
 
   // Initialize renderer if not already done
   if (!renderer) {
@@ -241,17 +247,17 @@ function runCode(){
 
   try {
     const src = editor.value;
-    window.logger && window.logger.info('Main', 'Parsing program', { length: src.length });
+    logger.info('Main', 'Parsing program', { length: src.length });
 
     const ast = Parser.parse(src);
-    window.logger && window.logger.info('Main', 'AST parsed successfully', {
+    logger.info('Main', 'AST parsed successfully', {
       statements: ast.statements.length,
       types: ast.statements.map(s => s.type)
     });
 
     // Tag AST with execution routes (render→gpu, play→audio, compute→cpu)
-    window.RouteTagging.tagExpressionRoutes(ast);
-    window.logger && window.logger.info('Main', 'Route tagging completed');
+    tagExpressionRoutes(ast);
+    logger.info('Main', 'Route tagging completed');
 
     // Update AST viewer (after tagging so route info is included)
     updateASTViewer(ast);
@@ -270,12 +276,12 @@ function runCode(){
 
     // Recreate WebGL renderer if needed to recompile shaders
     if (typeof WebGLRenderer !== 'undefined' && renderer instanceof WebGLRenderer) {
-      window.logger && window.logger.info('Main', 'Recreating WebGL renderer');
+      logger.info('Main', 'Recreating WebGL renderer');
       renderer = new WebGLRenderer(canvas, env);
     }
 
     renderer.start();
-    window.logger && window.logger.info('Main', 'Program execution completed successfully');
+    logger.info('Main', 'Program execution completed successfully');
 
   } catch (e){
     const errorMsg = (e && e.message) ? e.message : String(e);
@@ -287,7 +293,7 @@ function runCode(){
       astViewer.textContent = `Parse Error: ${errorMsg}`;
     }
 
-    window.logger && window.logger.error('Main', 'Program execution failed', {
+    logger.error('Main', 'Program execution failed', {
       error: errorMsg,
       stack: e.stack
     });
@@ -344,13 +350,11 @@ function initDebugPanel() {
 
   // Clear debug logs
   debugClear.addEventListener('click', () => {
-    if (window.logger) {
-      window.logger.clear();
-      // Also clear image cache
-      if (typeof Sampler !== 'undefined' && Sampler.clearCache) {
-        Sampler.clearCache();
-        window.logger.info('Main', 'Image cache cleared');
-      }
+    logger.clear();
+    // Also clear image cache
+    if (Sampler && Sampler.clearCache) {
+      Sampler.clearCache();
+      logger.info('Main', 'Image cache cleared');
     }
   });
 
@@ -425,14 +429,12 @@ function initDebugPanel() {
   // Log filters
   logFilters.forEach(filter => {
     filter.addEventListener('change', () => {
-      if (window.logger) {
-        const filters = {};
-        logFilters.forEach(f => {
-          const level = f.id.replace('filter', '').toLowerCase();
-          filters[level] = f.checked;
-        });
-        window.logger.setFilters(filters);
-      }
+      const filters = {};
+      logFilters.forEach(f => {
+        const level = f.id.replace('filter', '').toLowerCase();
+        filters[level] = f.checked;
+      });
+      logger.setFilters(filters);
     });
   });
 

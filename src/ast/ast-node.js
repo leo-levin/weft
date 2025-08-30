@@ -228,14 +228,18 @@ class NamedArg extends ASTNode {
   }
 }
 
-class DisplayStmt extends ASTNode {
-  constructor(args) {
-    super('DisplayStmt');
+// Base class for all output statements (render, play, compute, display)
+class OutputStatement extends ASTNode {
+  constructor(statementType, args) {
+    super(statementType);
     this.args = args;
     this.namedArgs = new Map();
     this.positionalArgs = [];
     this.parameters = {};
     this.parseArgs(args);
+    
+    // Determine execution route based on statement type
+    this.route = this.determineRoute();
   }
 
   getChildren() {
@@ -251,85 +255,61 @@ class DisplayStmt extends ASTNode {
         this.positionalArgs.push(arg);
       }
     });
+  }
+
+  determineRoute() {
+    switch (this.type) {
+      case 'RenderStmt': return 'gpu';
+      case 'PlayStmt': return 'audio';
+      case 'ComputeStmt': return 'cpu';
+      case 'DisplayStmt': return this.determineLegacyRoute();
+      default: return 'cpu';
+    }
+  }
+
+  determineLegacyRoute() {
+    const params = this.parameters;
+    
+    // GPU route indicators - visual rendering parameters
+    if (params.r || params.g || params.b || params.rgb ||
+        params.width || params.height || params.fps) {
+      return 'gpu';
+    }
+    
+    // Audio route indicators - audio synthesis parameters
+    if (params.audio || params.left || params.right ||
+        params.rate || params.channels) {
+      return 'audio';
+    }
+    
+    // Default based on positional args (legacy support)
+    if (this.positionalArgs.length >= 3) {
+      return 'gpu';  // Assume r,g,b positional arguments
+    }
+    
+    if (this.positionalArgs.length === 1) {
+      return 'audio';  // Assume single audio expression
+    }
+    
+    return 'cpu';  // Default fallback
   }
 }
 
-class RenderStmt extends ASTNode {
-  constructor(args) {
-    super('RenderStmt');
-    this.args = args;
-    this.namedArgs = new Map();
-    this.positionalArgs = [];
-    this.parameters = {};
-    this.parseArgs(args);
-  }
-
-  getChildren() {
-    return this.args;
-  }
-
-  parseArgs(args) {
-    args.forEach(arg => {
-      if (arg.type === 'NamedArg') {
-        this.namedArgs.set(arg.name, arg.value);
-        this.parameters[arg.name] = arg.value;
-      } else {
-        this.positionalArgs.push(arg);
-      }
-    });
-  }
+// Convenience constructors for specific statement types
+class DisplayStmt extends OutputStatement {
+  constructor(args) { super('DisplayStmt', args); }
 }
 
-class PlayStmt extends ASTNode {
-  constructor(args) {
-    super('PlayStmt');
-    this.args = args;
-    this.namedArgs = new Map();
-    this.positionalArgs = [];
-    this.parameters = {};
-    this.parseArgs(args);
-  }
-
-  getChildren() {
-    return this.args;
-  }
-
-  parseArgs(args) {
-    args.forEach(arg => {
-      if (arg.type === 'NamedArg') {
-        this.namedArgs.set(arg.name, arg.value);
-        this.parameters[arg.name] = arg.value;
-      } else {
-        this.positionalArgs.push(arg);
-      }
-    });
-  }
+class RenderStmt extends OutputStatement {
+  constructor(args) { super('RenderStmt', args); }
 }
 
-class ComputeStmt extends ASTNode {
-  constructor(args) {
-    super('ComputeStmt');
-    this.args = args;
-    this.namedArgs = new Map();
-    this.positionalArgs = [];
-    this.parameters = {};
-    this.parseArgs(args);
-  }
+class PlayStmt extends OutputStatement {
+  constructor(args) { super('PlayStmt', args); }
+}
 
-  getChildren() {
-    return this.args;
-  }
-
-  parseArgs(args) {
-    args.forEach(arg => {
-      if (arg.type === 'NamedArg') {
-        this.namedArgs.set(arg.name, arg.value);
-        this.parameters[arg.name] = arg.value;
-      } else {
-        this.positionalArgs.push(arg);
-      }
-    });
-  }
+class ComputeStmt extends OutputStatement {
+  constructor(args) { super('ComputeStmt', args); }
 }
 
 class SpindleDef extends ASTNode {
@@ -370,59 +350,30 @@ class Program extends ASTNode {
   }
 }
 
-// Export all classes
-if (typeof module !== 'undefined' && module.exports) {
-  // Node.js environment
-  module.exports = {
-    ASTNode,
-    BinaryExpr,
-    UnaryExpr,
-    CallExpr,
-    VarExpr,
-    NumExpr,
-    StrExpr,
-    MeExpr,
-    MouseExpr,
-    TupleExpr,
-    IndexExpr,
-    StrandAccessExpr,
-    IfExpr,
-    LetBinding,
-    Assignment,
-    NamedArg,
-    DisplayStmt,
-    RenderStmt,
-    PlayStmt,
-    ComputeStmt,
-    SpindleDef,
-    InstanceBinding,
-    Program
-  };
-} else {
-  // Browser environment
-  window.ASTNodes = {
-    ASTNode,
-    BinaryExpr,
-    UnaryExpr,
-    CallExpr,
-    VarExpr,
-    NumExpr,
-    StrExpr,
-    MeExpr,
-    MouseExpr,
-    TupleExpr,
-    IndexExpr,
-    StrandAccessExpr,
-    IfExpr,
-    LetBinding,
-    Assignment,
-    NamedArg,
-    DisplayStmt,
-    RenderStmt,
-    PlayStmt,
-    ComputeStmt,
-    SpindleDef,
-    InstanceBinding,
-    Program
-  };
-}
+// Export all classes using ES6 modules
+export {
+  ASTNode,
+  BinaryExpr,
+  UnaryExpr,
+  CallExpr,
+  VarExpr,
+  NumExpr,
+  StrExpr,
+  MeExpr,
+  MouseExpr,
+  TupleExpr,
+  IndexExpr,
+  StrandAccessExpr,
+  IfExpr,
+  LetBinding,
+  Assignment,
+  NamedArg,
+  OutputStatement,
+  DisplayStmt,
+  RenderStmt,
+  PlayStmt,
+  ComputeStmt,
+  SpindleDef,
+  InstanceBinding,
+  Program
+};

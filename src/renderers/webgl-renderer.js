@@ -929,4 +929,4 @@ ${glslCode.join('\n')}
   }
 }
 
-window.WebGLRenderer = WebGLRenderer;
+export { WebGLRenderer };

@@ -1,4 +1,6 @@
 // renderer.js — CPU renderer
+import { clamp, isNum } from '../runtime/runtime.js';
+
 class Renderer {
   constructor(canvas, env){
     this.cv = canvas; this.ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -110,4 +112,4 @@ class Renderer {
     env.frame++;
   }
 }
-window.Renderer = Renderer;
+export { Renderer };
