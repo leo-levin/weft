@@ -226,6 +226,8 @@ class Env {
   constructor(){
     this.instances = new Map();
     this.spindles = new Map();
+    this.parameters = new Map(); // Parameter strands registry
+    this.pragmas = []; // Store pragmas from parsing
     this.displayFns = null;
     this.defaultSampler = null;
     this.audio = { element:null, ctx:null, analyser:null, intensity:0 };
@@ -237,6 +239,180 @@ class Env {
     this.mediaCanvas = document.createElement('canvas');
     this.mediaCtx = this.mediaCanvas.getContext('2d', { willReadFrequently: true });
     this.mediaImageData = null;
+  }
+  
+  // Parameter strand management
+  createParameterStrand(name, config) {
+    const param = new ParameterStrand(name, config.defaultValue || 0, config);
+    this.parameters.set(name, param);
+    return param;
+  }
+  
+  getParameterStrand(name) {
+    return this.parameters.get(name);
+  }
+  
+  processParameters(pragmas) {
+    this.pragmas = pragmas || [];
+    
+    // console.log('🔧 Processing pragmas:', pragmas);
+    
+    // Create parameter instances from pragmas
+    for (const pragma of this.pragmas) {
+      if (pragma.type === 'slider' && pragma.config) {
+        const { name, strands, range = [0, 1], label } = pragma.config;
+        const defaultValue = (range[0] + range[1]) / 2;
+        
+        // console.log(`📊 Creating slider parameter instance '${name}' with strands:`, strands);
+        
+        // Create parameter strands for each output
+        const outputs = {};
+        if (strands && strands.length > 0) {
+          for (const strandName of strands) {
+            if (strandName.trim()) {
+              const paramStrand = new ParameterStrand(strandName.trim(), defaultValue, {
+                type: 'slider',
+                range,
+                label: `${label} - ${strandName}`,
+                defaultValue
+              });
+              outputs[strandName.trim()] = paramStrand;
+              
+              // Also register the strand as a parameter for hover detection
+              this.parameters.set(strandName.trim(), paramStrand);
+              // console.log(`✅ Created parameter strand '${strandName.trim()}'`);
+            }
+          }
+        }
+        
+        // Create the parameter instance with output strands
+        if (Object.keys(outputs).length > 0) {
+          this.instances.set(name, {
+            kind: 'instance',
+            name,
+            outs: outputs
+          });
+          // console.log(`✅ Created parameter instance '${name}' with outputs:`, Object.keys(outputs));
+        }
+      } else if (pragma.type === 'color' && pragma.config) {
+        const { name, strands, label, defaultValue } = pragma.config;
+        
+        // Create parameter strands for each output (r, g, b components)
+        const outputs = {};
+        if (strands && strands.length > 0) {
+          // For color, create separate strands for each component
+          strands.forEach((strandName, index) => {
+            if (strandName.trim()) {
+              // Default color components (red, green, blue)
+              const defaultComponent = index === 0 ? 1.0 : index === 1 ? 0.0 : 0.0;
+              
+              const paramStrand = new ParameterStrand(strandName.trim(), defaultComponent, {
+                type: 'color_component',
+                component: ['r', 'g', 'b'][index] || 'r',
+                label: `${label} - ${strandName}`,
+                defaultValue: defaultComponent,
+                parentColor: name
+              });
+              outputs[strandName.trim()] = paramStrand;
+              
+              // Also register the strand as a parameter for hover detection
+              this.parameters.set(strandName.trim(), paramStrand);
+            }
+          });
+        }
+        
+        // Create the parameter instance with output strands
+        if (Object.keys(outputs).length > 0) {
+          this.instances.set(name, {
+            kind: 'instance',
+            name,
+            outs: outputs,
+            parameterType: 'color'
+          });
+        }
+      } else if (pragma.type === 'xy' && pragma.config) {
+        const { name, strands, xRange, yRange, label, defaultValue } = pragma.config;
+        
+        // Create parameter strands for x and y components
+        const outputs = {};
+        if (strands && strands.length >= 2) {
+          // X component
+          const xStrand = new ParameterStrand(strands[0].trim(), defaultValue.x, {
+            type: 'xy_component',
+            component: 'x',
+            range: xRange,
+            label: `${label} - X`,
+            defaultValue: defaultValue.x,
+            parentXY: name
+          });
+          outputs[strands[0].trim()] = xStrand;
+          this.parameters.set(strands[0].trim(), xStrand);
+          
+          // Y component
+          const yStrand = new ParameterStrand(strands[1].trim(), defaultValue.y, {
+            type: 'xy_component',
+            component: 'y',
+            range: yRange,
+            label: `${label} - Y`,
+            defaultValue: defaultValue.y,
+            parentXY: name
+          });
+          outputs[strands[1].trim()] = yStrand;
+          this.parameters.set(strands[1].trim(), yStrand);
+        }
+        
+        // Create the parameter instance
+        if (Object.keys(outputs).length > 0) {
+          this.instances.set(name, {
+            kind: 'instance',
+            name,
+            outs: outputs,
+            parameterType: 'xy',
+            xRange,
+            yRange
+          });
+        }
+      } else if (pragma.type === 'toggle' && pragma.config) {
+        const { name, strands, label, defaultValue } = pragma.config;
+        
+        // Create parameter strands for toggle
+        const outputs = {};
+        if (strands && strands.length > 0) {
+          for (const strandName of strands) {
+            if (strandName.trim()) {
+              const paramStrand = new ParameterStrand(strandName.trim(), defaultValue ? 1.0 : 0.0, {
+                type: 'toggle',
+                label: `${label} - ${strandName}`,
+                defaultValue: defaultValue ? 1.0 : 0.0,
+                booleanValue: defaultValue
+              });
+              outputs[strandName.trim()] = paramStrand;
+              
+              // Also register the strand as a parameter for hover detection
+              this.parameters.set(strandName.trim(), paramStrand);
+            }
+          }
+        }
+        
+        // Create the parameter instance
+        if (Object.keys(outputs).length > 0) {
+          this.instances.set(name, {
+            kind: 'instance',
+            name,
+            outs: outputs,
+            parameterType: 'toggle'
+          });
+        }
+      }
+    }
+    
+    // Keep only the essential check
+    const lvlInstance = this.instances.get('lvl');
+    if (lvlInstance) {
+      console.log('✅ Parameter instance "lvl" created successfully');
+    } else {
+      console.log('❌ Parameter instance "lvl" NOT found');
+    }
   }
   time(){ return (performance.now() - this.boot) / 1000; }
 }
@@ -345,11 +521,23 @@ function evalExprToStrand(node, env) {
     case "StrandAccess": {
       const base=node.base, out=node.out;
       return { kind:'strand', evalAt(me, scope) {
-        const inst = scope.instances.get(base);
+        // Check scope.instances first, then env.instances (for parameter instances)
+        let inst = scope.instances ? scope.instances.get(base) : null;
+        if (!inst && env.instances) {
+          inst = env.instances.get(base);
+        }
+        
         if(!inst) throw new RuntimeError(`Unknown instance '${base}'`);
         const strand = inst.outs[out];
         if(!strand) throw new RuntimeError(`'${base}' has no output '${out}'`);
-        if(strand.kind === 'strand') return strand.evalAt(me, scope);
+        if(strand.kind === 'strand') {
+          const value = strand.evalAt(me, scope);
+          // Only log for parameter strands
+          if (base === 'lvl' && out === 'l') {
+            console.log(`🎛️ Parameter lvl@l = ${value}`);
+          }
+          return value;
+        }
         if(typeof strand === 'function') return strand(me, scope); // backward compatibility
         return strand;
       }};
@@ -371,6 +559,13 @@ function evalExprToStrand(node, env) {
       const n=node.name;
       return { kind:'strand', evalAt(me, scope) {
         logger.debug('VarLookup', `Looking up variable '${n}'`);
+        
+        // First check for parameter strands
+        const paramStrand = env.getParameterStrand(n);
+        if (paramStrand) {
+          logger.debug('VarLookup', `Found parameter strand '${n}'`, { value: paramStrand.value });
+          return paramStrand.value;
+        }
         
         if (scope.__scopeStack) {
           for (let i = scope.__scopeStack.length - 1; i >= 0; i--) {
@@ -456,6 +651,55 @@ function readSlot(slot) {
 
 function ConstantStrand(value) {
   return { kind: 'strand', evalAt(_me, _env) { return value; } };
+}
+
+// Parameter strand for UI-controlled values
+class ParameterStrand {
+  constructor(name, initialValue = 0, config = {}) {
+    this.kind = 'strand';
+    this.name = name;
+    this.value = initialValue;
+    this.config = config;
+    this.isDirty = true;
+    this.lastValue = undefined;
+    this.subscribers = new Set();
+    this.widgetType = config.type || 'slider';
+    
+    // Create unique ID for this parameter
+    this.id = `param_${name}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+  
+  evalAt(_me, _env) {
+    return this.value;
+  }
+  
+  setValue(newValue) {
+    if (this.value !== newValue) {
+      console.log(`🎛️ Parameter '${this.name}' value changed: ${this.value} → ${newValue}`);
+      this.value = newValue;
+      this.isDirty = true;
+      this.notifySubscribers();
+      
+      // Trigger a re-render by dispatching a custom event
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('parameterChanged', {
+          detail: { paramName: this.name, newValue, strand: this }
+        }));
+      }
+    }
+  }
+  
+  subscribe(callback) {
+    this.subscribers.add(callback);
+  }
+  
+  unsubscribe(callback) {
+    this.subscribers.delete(callback);
+  }
+  
+  notifySubscribers() {
+    this.subscribers.forEach(callback => callback(this.value, this));
+  }
 }
 
 function coerceToStrand(valueOrStrand) {
@@ -1487,6 +1731,12 @@ class Executor {
     this.ast = ast;
     this.env.instances.clear();
     this.env.displayFns = null;
+
+    // Process pragmas for parameter strands
+    if (ast.pragmas) {
+      this.env.processParameters(ast.pragmas);
+      logger.info('Executor', `Processed ${ast.pragmas.length} pragmas`);
+    }
 
     // Clear compilation caches on new program run
     clearCompilationCaches();

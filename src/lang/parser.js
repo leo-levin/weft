@@ -104,9 +104,12 @@ Weft {
   sym<tok> = tok space*
   kw<word> = word ~identRest space*
 
-  space += lineComment | blockComment
+  space += lineComment | blockComment | pragmaComment
   lineComment = "//" (~"\n" any)*
   blockComment = "/*" (~"*/" any)* "*/"
+  pragmaComment = "#" pragmaType pragmaBody "\n"?
+  pragmaType = "slider" | "color" | "xy" | "toggle" | "curve" | "badge"
+  pragmaBody = (~"\n" any)*
 }
 `;
 
@@ -117,6 +120,123 @@ try {
 } catch (e) {
   console.error('🧨 Ohm grammar parse error:', e.message);
   throw e;
+}
+
+// Pragma parsing utility
+function extractPragmas(sourceCode) {
+  const pragmas = [];
+  const lines = sourceCode.split('\n');
+  
+  lines.forEach((line, lineNum) => {
+    const pragmaMatch = line.match(/^#(\w+)\s*(.*)/);
+    if (pragmaMatch) {
+      const [, type, body] = pragmaMatch;
+      const pragma = { type, body: body.trim(), line: lineNum + 1 };
+      
+      // Parse pragma body based on type
+      if (type === 'slider') {
+        console.log(`🔍 Parsing slider pragma body: "${body}"`);
+        // Updated regex to use = instead of : 
+        const sliderMatch = body.match(/(\w+)<(.+?)>\s*=\s*([0-9.,\s]+)\s+"(.+?)"/);
+        console.log('🎯 Slider match result:', sliderMatch);
+        
+        if (sliderMatch) {
+          const [, name, strands, rangeStr, label] = sliderMatch;
+          
+          // Parse range - handle both "0.1,5.0" and "0..1"
+          let range;
+          if (rangeStr.includes('..')) {
+            range = rangeStr.split('..').map(r => parseFloat(r.trim()));
+          } else if (rangeStr.includes(',')) {
+            range = rangeStr.split(',').map(r => parseFloat(r.trim()));
+          } else {
+            range = [0, parseFloat(rangeStr.trim())];
+          }
+          
+          console.log(`📊 Parsed range from "${rangeStr}":`, range);
+          
+          pragma.config = {
+            name,
+            strands: strands.split(',').map(s => s.trim()).filter(s => s.length > 0),
+            range,
+            label
+          };
+          
+          console.log('✅ Parsed slider config:', pragma.config);
+        } else {
+          console.log('❌ Slider pragma did not match regex');
+        }
+      } else if (type === 'color') {
+        console.log(`🎨 Parsing color pragma body: "${body}"`);
+        const colorMatch = body.match(/(\w+)<(.+?)>\s*=\s*"(.+?)"/);
+        console.log('🎯 Color match result:', colorMatch);
+        
+        if (colorMatch) {
+          const [, name, strands, label] = colorMatch;
+          pragma.config = {
+            name,
+            strands: strands.split(',').map(s => s.trim()).filter(s => s.length > 0),
+            label,
+            defaultValue: '#ff0000'
+          };
+          console.log('✅ Parsed color config:', pragma.config);
+        } else {
+          console.log('❌ Color pragma did not match regex');
+        }
+      } else if (type === 'xy') {
+        console.log(`📐 Parsing xy pragma body: "${body}"`);
+        const xyMatch = body.match(/(\w+)<(.+?)>\s*=\s*\(([0-9.,\s]+)\),\s*\(([0-9.,\s]+)\)\s+"(.+?)"/);
+        console.log('🎯 XY match result:', xyMatch);
+        
+        if (xyMatch) {
+          const [, name, strands, xRange, yRange, label] = xyMatch;
+          
+          // Parse X and Y ranges
+          const xRangeParts = xRange.split(',').map(r => parseFloat(r.trim()));
+          const yRangeParts = yRange.split(',').map(r => parseFloat(r.trim()));
+          
+          pragma.config = {
+            name,
+            strands: strands.split(',').map(s => s.trim()).filter(s => s.length > 0),
+            xRange: xRangeParts,
+            yRange: yRangeParts,
+            label,
+            defaultValue: { x: (xRangeParts[0] + xRangeParts[1]) / 2, y: (yRangeParts[0] + yRangeParts[1]) / 2 }
+          };
+          console.log('✅ Parsed XY config:', pragma.config);
+        } else {
+          console.log('❌ XY pragma did not match regex');
+        }
+      } else if (type === 'toggle') {
+        console.log(`🔘 Parsing toggle pragma body: "${body}"`);
+        const toggleMatch = body.match(/(\w+)<(.+?)>\s*=\s*(true|false)\s+"(.+?)"/);
+        console.log('🎯 Toggle match result:', toggleMatch);
+        
+        if (toggleMatch) {
+          const [, name, strands, defaultVal, label] = toggleMatch;
+          pragma.config = {
+            name,
+            strands: strands.split(',').map(s => s.trim()).filter(s => s.length > 0),
+            label,
+            defaultValue: defaultVal === 'true'
+          };
+          console.log('✅ Parsed toggle config:', pragma.config);
+        } else {
+          console.log('❌ Toggle pragma did not match regex');
+        }
+      } else if (type === 'badge') {
+        const badgeMatch = body.match(/(\w+)<(.+?)>/);
+        if (badgeMatch) {
+          const [, name, output] = badgeMatch;
+          pragma.config = { name, output };
+        }
+      }
+      
+      pragmas.push(pragma);
+    }
+  });
+  
+  return pragmas;
 }
 
 const sem = g.createSemantics().addOperation('ast', {
@@ -318,7 +438,15 @@ class Parser {
   static parse(src) {
     const m = g.match(src, 'Program');
     if (!m.succeeded()) throw new Error(m.message);
-    return sem(m).ast();
+    const ast = sem(m).ast();
+    
+    // Extract pragmas from source code
+    const pragmas = extractPragmas(src);
+    
+    // Attach pragmas to AST for runtime access
+    ast.pragmas = pragmas;
+    
+    return ast;
   }
 }
 

@@ -399,6 +399,19 @@ return powerResult;
         const outputName = typeof node.out === 'string' ? node.out : node.out.name;
         const key = `${baseName}@${outputName}`;
 
+        // Check if this is a parameter instance access (e.g., lvl@l)
+        if (env.instances && env.instances.has(baseName)) {
+          const instance = env.instances.get(baseName);
+          if (instance.kind === 'instance' && instance.outs && instance.outs[outputName]) {
+            const strand = instance.outs[outputName];
+            if (strand.kind === 'strand' && strand.name) {
+              // This is a parameter strand, use the uniform
+              console.log(`🎮 WebGL: Converting ${baseName}@${outputName} to uniform u_param_${strand.name}`);
+              return `u_param_${strand.name}`;
+            }
+          }
+        }
+
         if (instanceOutputs[key]) {
           return instanceOutputs[key];
         }
@@ -703,6 +716,14 @@ const displayStmt = renderStmt || this.env.displayAst;
     for (const [instName, textureInfo] of this.textures) {
       textureUniforms.push(`uniform sampler2D ${textureInfo.uniformName};`);
     }
+    
+    // Generate parameter uniform declarations
+    const parameterUniforms = [];
+    if (this.env.parameters) {
+      for (const [paramName, paramStrand] of this.env.parameters) {
+        parameterUniforms.push(`uniform float u_param_${paramName};`);
+      }
+    }
 
     return `
       precision highp float;
@@ -712,6 +733,7 @@ const displayStmt = renderStmt || this.env.displayAst;
       uniform float u_frames;
       uniform vec2 u_mouse;
       ${textureUniforms.join('\n      ')}
+      ${parameterUniforms.join('\n      ')}
 
       varying vec2 v_texCoord;
 
@@ -1196,6 +1218,15 @@ ${glslCode.join('\n')}
         gl.uniform1i(this.uniforms[textureInfo.uniformName], textureInfo.unit);
       }
     }
+    
+    // Cache parameter uniform locations
+    if (this.env.parameters) {
+      for (const [paramName, paramStrand] of this.env.parameters) {
+        const uniformName = `u_param_${paramName}`;
+        this.uniforms[uniformName] = gl.getUniformLocation(this.program, uniformName);
+        console.log(`🎮 Cached parameter uniform: ${uniformName}`);
+      }
+    }
 
     return true;
   }
@@ -1224,6 +1255,20 @@ ${glslCode.join('\n')}
     gl.uniform1f(this.uniforms.time, env.time());
     gl.uniform1f(this.uniforms.frames, env.frame / env.targetFps);
     gl.uniform2f(this.uniforms.mouse, env.mouse.x, env.mouse.y);
+    
+    // Set parameter uniforms
+    if (env.parameters) {
+      for (const [paramName, paramStrand] of env.parameters) {
+        const uniformName = `u_param_${paramName}`;
+        if (this.uniforms[uniformName]) {
+          gl.uniform1f(this.uniforms[uniformName], paramStrand.value);
+          // Only log for 'l' parameter to avoid spam
+          if (paramName === 'l') {
+            console.log(`🎮 WebGL: Set uniform ${uniformName} = ${paramStrand.value}`);
+          }
+        }
+      }
+    }
 
     // Clear and draw
     gl.clearColor(0, 0, 0, 1);

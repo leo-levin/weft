@@ -11,68 +11,62 @@
   <div id="left">
     <div id="toolbar">
       <button id="runBtn">Run</button>
-      <button id="mediaBtn">Start Media</button>
-      <button id="autorunBtn" type="button">Auto-run</button>
-      <button id="interpToggle" type="button">Interpolation</button>
-      <div class="pill" id="frameIndicator">●</div>
+      <button id="mediaBtn">Media</button>
+      <button id="autorunBtn" type="button">Auto</button>
+      <button id="interpToggle" type="button">Smooth</button>
+      <button id="probeToggle" type="button">Probe</button>
       <span class="pill" id="fpsPill">FPS: —</span>
-      <span class="pill" id="perfPill">Frame: — ms</span>
-      <span class="pill" id="resPill">Res: 360×202</span>
+      <span class="pill" id="perfPill">— ms</span>
+      <span class="pill" id="resPill">360×202</span>
     </div>
     <div id="editorContainer">
       <div id="syntaxHighlight"></div>
       <textarea id="editor" spellcheck="false"></textarea>
     </div>
     <div id="errors"></div>
-    <div id="debugPanel" class="collapsed">
-      <div id="debugResizeHandle"></div>
-      <div id="debugHeader">
-        <span>Debug Info</span>
-        <button id="debugToggle">Show</button>
-        <button id="debugClear">Clear</button>
-      </div>
-      <div id="debugContent">
-        <div id="debugTabs">
-          <button class="debug-tab active" data-tab="logs">Logs</button>
-          <button class="debug-tab" data-tab="scope">Scope</button>
-          <button class="debug-tab" data-tab="instances">Instances</button>
-        </div>
-        <div id="debugTabContent">
-          <div id="logsTab" class="debug-tab-pane active">
-            <div id="logFilters">
-              <label><input type="checkbox" id="filterDebug" checked> DEBUG</label>
-              <label><input type="checkbox" id="filterInfo" checked> INFO</label>
-              <label><input type="checkbox" id="filterWarn" checked> WARN</label>
-              <label><input type="checkbox" id="filterError" checked> ERROR</label>
-            </div>
-            <div id="logOutput"></div>
-          </div>
-          <div id="scopeTab" class="debug-tab-pane">
-            <div id="scopeViewer"></div>
-          </div>
-          <div id="instancesTab" class="debug-tab-pane">
-            <div id="instanceViewer"></div>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
   <div id="right">
     <div id="canvasTabs">
       <button class="canvas-tab active" data-tab="canvas">Canvas</button>
       <button class="canvas-tab" data-tab="ast">AST</button>
+      <button class="canvas-tab" data-tab="debug">Debug</button>
     </div>
     <div id="canvasTabContent">
       <div id="canvasPane" class="canvas-tab-pane active">
         <div id="canvasWrap">
           <canvas id="out" width="160" height="90"></canvas>
-          <div id="rgbDisplay">RGB: —, —, —</div>
           <div id="stats">
           </div>
         </div>
       </div>
       <div id="astPane" class="canvas-tab-pane">
         <pre id="astViewer"></pre>
+      </div>
+      <div id="debugPane" class="canvas-tab-pane">
+        <div id="debugContent">
+          <div id="debugTabs">
+            <button class="debug-tab active" data-tab="logs">Logs</button>
+            <button class="debug-tab" data-tab="scope">Scope</button>
+            <button class="debug-tab" data-tab="instances">Instances</button>
+          </div>
+          <div id="debugTabContent">
+            <div id="logsTab" class="debug-tab-pane active">
+              <div id="logFilters">
+                <label><input type="checkbox" id="filterDebug" checked> DEBUG</label>
+                <label><input type="checkbox" id="filterInfo" checked> INFO</label>
+                <label><input type="checkbox" id="filterWarn" checked> WARN</label>
+                <label><input type="checkbox" id="filterError" checked> ERROR</label>
+              </div>
+              <div id="logOutput"></div>
+            </div>
+            <div id="scopeTab" class="debug-tab-pane">
+              <div id="scopeViewer"></div>
+            </div>
+            <div id="instancesTab" class="debug-tab-pane">
+              <div id="instanceViewer"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -86,6 +80,7 @@
 <script type="module" src="../src/runtime/runtime.js"></script>
 <script type="module" src="../src/renderers/renderer.js"></script>
 <script type="module" src="../src/renderers/webgl-renderer.js"></script>
+<script type="module" src="../src/ui/coordinate-probe.js"></script>
 <script type="module" src="../src/ui/main.js"></script>
 <script>
   window.addEventListener('error', function(e) {

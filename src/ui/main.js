@@ -3,17 +3,20 @@ import { tagExpressionRoutes } from '../lang/tagging.js';
 import { Env, Executor, clamp, isNum, logger, Sampler } from '../runtime/runtime.js';
 import { Renderer } from '../renderers/renderer.js';
 import { WebGLRenderer } from '../renderers/webgl-renderer.js';
+import { WidgetManager } from './widget-manager.js';
+import { HoverDetector } from './hover-detector.js';
+import { CoordinateProbe } from './coordinate-probe.js';
 
 console.log('✅ Starting WEFT application...');
 
 const editor = document.getElementById('editor');
 // Ensure editor text is visible with white color, default background
 if (editor) {
-  editor.style.color = 'white';                  // text color
-  editor.style.backgroundColor = '';             // reset background to default
-  editor.style.fontFamily = "'SF Mono', monospace";
-  editor.style.fontSize = '13px';
-  editor.style.padding = '10px';
+  editor.style.color = 'var(--ink)';
+  editor.style.backgroundColor = '';
+  editor.style.fontFamily = "'SF Mono', ui-monospace, monospace";
+  editor.style.fontSize = 'var(--font-size-sm)';
+  editor.style.padding = 'var(--spacing-xxl)';
 }
 const errorsEl = document.getElementById('errors');
 const canvas = document.getElementById('out');
@@ -23,6 +26,11 @@ const executor = new Executor(env, Parser);
 
 // Initialize renderer - will be set up after all scripts load
 let renderer;
+
+// Initialize widget manager for parameter controls
+let widgetManager;
+let hoverDetector;
+let coordinateProbe;
 
 // Function to update AST viewer with clean, formatted JSON
 function updateASTViewer(ast) {
@@ -125,6 +133,25 @@ function initializeRenderer() {
     console.log('Using CPU renderer');
     renderer = new Renderer(canvas, env);
   }
+  
+  // Initialize widget manager after renderer is ready
+  if (!widgetManager) {
+    widgetManager = new WidgetManager(env, document.body);
+    console.log('✅ Widget manager initialized');
+  }
+  
+  // Initialize hover detector for parameter interactions
+  if (!hoverDetector) {
+    hoverDetector = new HoverDetector(editor, env, widgetManager);
+    window.hoverDetector = hoverDetector; // Global reference for event handlers
+    console.log('✅ Hover detector initialized');
+  }
+  
+  // Initialize coordinate probe for spatial exploration
+  if (!coordinateProbe) {
+    coordinateProbe = new CoordinateProbe(canvas, env, renderer, executor);
+    console.log('✅ Coordinate probe initialized');
+  }
 }
 
 const interpToggle = document.getElementById('interpToggle');
@@ -132,6 +159,14 @@ env.interpolate = false;
 interpToggle.addEventListener('click', () => {
   env.interpolate = !env.interpolate;
   interpToggle.classList.toggle('active', env.interpolate);
+});
+
+const probeToggle = document.getElementById('probeToggle');
+probeToggle.addEventListener('click', () => {
+  if (coordinateProbe) {
+    const isEnabled = coordinateProbe.toggle();
+    probeToggle.classList.toggle('active', isEnabled);
+  }
 });
 
 function fitCanvas(){
@@ -154,51 +189,7 @@ canvas.addEventListener('mousemove', (e)=>{
   env.mouse.y = clamp((e.clientY - rect.top)/rect.height);
 });
 
-canvas.addEventListener('click', (e)=>{
-  const rect = canvas.getBoundingClientRect();
-  const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
-  const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
-
-  if (x >= 0 && x < canvas.width && y >= 0 && y < canvas.height) {
-    try {
-      let r = 0, g = 0, b = 0;
-
-      // Check if we're using WebGL renderer
-      if (renderer && typeof WebGLRenderer !== 'undefined' && renderer instanceof WebGLRenderer) {
-        // For WebGL, we need to read from the WebGL context
-        const gl = renderer.gl;
-        if (gl) {
-          const pixels = new Uint8Array(4);
-          gl.readPixels(x, canvas.height - y - 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-          r = pixels[0];
-          g = pixels[1];
-          b = pixels[2];
-        }
-      } else {
-        // For CPU renderer, use 2D context
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          const imageData = ctx.getImageData(x, y, 1, 1);
-          r = imageData.data[0];
-          g = imageData.data[1];
-          b = imageData.data[2];
-        }
-      }
-
-      const rgbDisplay = document.getElementById('rgbDisplay');
-      if (rgbDisplay) {
-        rgbDisplay.textContent = `RGB: ${(r/255).toFixed(3)}, ${(g/255).toFixed(3)}, ${(b/255).toFixed(3)}`;
-      }
-
-    } catch (e) {
-      console.warn('Could not get pixel data:', e);
-      const rgbDisplay = document.getElementById('rgbDisplay');
-      if (rgbDisplay) {
-        rgbDisplay.textContent = 'RGB: —, —, —';
-      }
-    }
-  }
-});
+// Canvas click handler is now handled by coordinate probe when enabled
 
 let debounceTimer = null;
 const autorunBtn = document.getElementById('autorunBtn');
@@ -282,6 +273,17 @@ function runCode(){
 
     renderer.start();
     logger.info('Main', 'Program execution completed successfully');
+    
+    // Refresh coordinate probe after rendering
+    if (coordinateProbe) {
+      coordinateProbe.refresh();
+    }
+    
+    // Update hover zones after program execution (parameters may have been created)
+    if (hoverDetector) {
+      console.log('🔄 Triggering hover zone update after program execution');
+      hoverDetector.updateHoverZones();
+    }
 
   } catch (e){
     const errorMsg = (e && e.message) ? e.message : String(e);
@@ -328,35 +330,10 @@ display(colors)`;
 
 // Debug panel controls
 function initDebugPanel() {
-  const debugToggle = document.getElementById('debugToggle');
-  const debugClear = document.getElementById('debugClear');
-  const debugPanel = document.getElementById('debugPanel');
-  const debugResizeHandle = document.getElementById('debugResizeHandle');
+  // Debug sub-tabs (Logs, Scope, Instances) - now inside the main Debug tab
   const debugTabs = document.querySelectorAll('.debug-tab');
   const debugTabPanes = document.querySelectorAll('.debug-tab-pane');
   const logFilters = document.querySelectorAll('#logFilters input[type="checkbox"]');
-
-  // Toggle debug panel
-  debugToggle.addEventListener('click', () => {
-    const isCollapsed = debugPanel.classList.contains('collapsed');
-    if (isCollapsed) {
-      debugPanel.classList.remove('collapsed');
-      debugToggle.textContent = 'Hide';
-    } else {
-      debugPanel.classList.add('collapsed');
-      debugToggle.textContent = 'Show';
-    }
-  });
-
-  // Clear debug logs
-  debugClear.addEventListener('click', () => {
-    logger.clear();
-    // Also clear image cache
-    if (Sampler && Sampler.clearCache) {
-      Sampler.clearCache();
-      logger.info('Main', 'Image cache cleared');
-    }
-  });
 
   // Tab switching
   debugTabs.forEach(tab => {
@@ -387,7 +364,7 @@ function initDebugPanel() {
   canvasTabs.forEach((tab, index) => {
     console.log(`Setting up tab ${index}:`, tab.textContent, tab.dataset.tab);
     tab.addEventListener('click', (e) => {
-      console.log('Canvas tab clicked:', tab.textContent);
+      console.log('Canvas tab clicked:', tab.textContent, 'Target:', tab.dataset.tab);
       const targetTab = tab.dataset.tab;
 
       // Update active tab
@@ -396,6 +373,7 @@ function initDebugPanel() {
 
       // Update active pane
       canvasTabPanes.forEach(pane => {
+        console.log('Checking pane:', pane.id, 'Looking for:', targetTab + 'Pane');
         pane.classList.remove('active');
         if (pane.id === targetTab + 'Pane') {
           pane.classList.add('active');
@@ -439,6 +417,12 @@ function initDebugPanel() {
   });
 
   // Debug panel resize functionality
+  const debugPanel = document.getElementById('debugPane');
+  const debugResizeHandle = document.querySelector('.debug-resize-handle');
+  
+  // Only setup resize if elements exist
+  if (!debugResizeHandle || !debugPanel) return;
+  
   let isResizing = false;
   let startY = 0;
   let startHeight = 0;
@@ -486,5 +470,18 @@ document.addEventListener('DOMContentLoaded', () => {
     initDebugPanel();
 
     runCode();
+    
+    // Listen for parameter changes to trigger re-rendering
+    window.addEventListener('parameterChanged', (event) => {
+      console.log('🔄 Parameter changed, triggering re-render:', event.detail);
+      if (env.autorun) {
+        // Use a short debounce to avoid excessive re-renders
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          runCode();
+        }, 50);
+      }
+    });
+    
   }, 100);
 });
