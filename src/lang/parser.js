@@ -62,9 +62,12 @@ Weft {
                  | ArithExpr
   CmpOp = sym<"==="> | sym<"=="> | sym<"!="> | sym<"<="> | sym<">="> | sym<"<"> | sym<">">
 
-  ArithExpr = ArithExpr AddOp ArithExpr  -- addsub
-            | ArithExpr MulOp ArithExpr  -- muldiv
-            | ArithExpr sym<"^"> ArithExpr  -- power
+  ArithExpr = AddExpr
+  AddExpr = AddExpr AddOp MulExpr  -- addsub
+          | MulExpr
+  MulExpr = MulExpr MulOp PowerExpr  -- muldiv
+          | PowerExpr  
+  PowerExpr = UnaryExpr sym<"^"> PowerExpr  -- power
             | UnaryExpr
   AddOp = sym<"+"> | sym<"-">
   MulOp = sym<"*"> | sym<"/"> | sym<"%">
@@ -239,15 +242,15 @@ const sem = g.createSemantics().addOperation('ast', {
       return { type: 'Bin', op: op.sourceString.trim(), left: left.ast(), right: right.ast() };
     },
 
-    ArithExpr_addsub(left, op, right) {
+    AddExpr_addsub(left, op, right) {
       return { type: 'Bin', op: op.sourceString.trim(), left: left.ast(), right: right.ast() };
     },
 
-    ArithExpr_muldiv(left, op, right) {
+    MulExpr_muldiv(left, op, right) {
       return { type: 'Bin', op: op.sourceString.trim(), left: left.ast(), right: right.ast() };
     },
 
-    ArithExpr_power(left, _op, right) {
+    PowerExpr_power(left, _op, right) {
       return { type: 'Bin', op: '^', left: left.ast(), right: right.ast() };
     },
 
