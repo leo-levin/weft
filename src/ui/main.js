@@ -3,6 +3,7 @@ import { tagExpressionRoutes } from '../lang/tagging.js';
 import { Env, Executor, clamp, isNum, logger, Sampler } from '../runtime/runtime.js';
 import { Renderer } from '../renderers/renderer.js';
 import { WebGLRenderer } from '../renderers/webgl-renderer.js';
+import { AudioWorkletRenderer } from '../renderers/audio-worklet-renderer.js';
 import { WidgetManager } from './widget-manager.js';
 import { HoverDetector } from './hover-detector.js';
 import { CoordinateProbe } from './coordinate-probe.js';
@@ -27,6 +28,7 @@ const executor = new Executor(env, Parser);
 
 // Initialize renderer - will be set up after all scripts load
 let renderer;
+let audioRenderer;
 
 // Initialize widget manager for parameter controls
 let widgetManager;
@@ -135,6 +137,12 @@ function initializeRenderer() {
     console.log('Using CPU renderer');
     renderer = new Renderer(canvas, env);
   }
+
+  // Initialize audio renderer
+  if (!audioRenderer) {
+    audioRenderer = new AudioWorkletRenderer(env);
+    console.log('🎵 Audio renderer initialized');
+  }
   
   // Initialize widget manager after renderer is ready
   if (!widgetManager) {
@@ -222,10 +230,20 @@ editor.addEventListener('input', ()=>{
 });
 
 document.getElementById('runBtn').addEventListener('click', runCode);
-document.getElementById('mediaBtn').addEventListener('click', ()=>{
+document.getElementById('mediaBtn').addEventListener('click', async ()=>{
   try { env.audio.ctx && env.audio.ctx.resume && env.audio.ctx.resume(); } catch {}
   try { env.audio.element && env.audio.element.play(); } catch {}
   try { env.defaultSampler && env.defaultSampler.play(); } catch {}
+
+  // Resume audio worklet context
+  if (audioRenderer && audioRenderer.audioContext) {
+    try {
+      await audioRenderer.audioContext.resume();
+      console.log('🎵 AudioContext resumed');
+    } catch (error) {
+      console.warn('🎵 Failed to resume AudioContext:', error);
+    }
+  }
 });
 
 function persistAndRun(){
@@ -234,7 +252,7 @@ function persistAndRun(){
 }
 
 
-function runCode(){
+async function runCode(){
   errorsEl.textContent = "";
 
   // Clear previous logs
@@ -274,15 +292,32 @@ function runCode(){
     executor.run(ast);
     renderer.stop();
 
+    // Stop audio renderer
+    if (audioRenderer) {
+      audioRenderer.stop();
+    }
+
     // Recreate WebGL renderer if needed to recompile shaders
     if (typeof WebGLRenderer !== 'undefined' && renderer instanceof WebGLRenderer) {
       logger.info('Main', 'Recreating WebGL renderer');
       renderer = new WebGLRenderer(canvas, env);
     }
 
+    // Compile audio if there are play statements
+    if (audioRenderer && env.playStatements && env.playStatements.length > 0) {
+      try {
+        await audioRenderer.compile(env.playStatements);
+        await audioRenderer.start();
+        logger.info('Main', 'Audio compilation and start completed');
+      } catch (error) {
+        logger.error('Main', 'Audio compilation failed', error);
+      }
+    }
+
     // Update clock display with new renderer
     if (clockDisplay) {
       clockDisplay.setRenderer(renderer);
+      clockDisplay.setAudioRenderer(audioRenderer);
     }
 
     renderer.start();

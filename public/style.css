@@ -850,13 +850,55 @@ code { color: #cbd5e1; }
 
 #logFilters {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 12px;
   font-size: 11px;
   padding: 8px 12px;
   background: rgba(33, 37, 52, 0.5);
   border-radius: 6px;
   border: 1px solid #2a3441;
+}
+
+#levelFilters {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+#componentFilters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#componentFilters > div:first-child {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#componentFilters button {
+  padding: 2px 6px;
+  background: rgba(122, 162, 255, 0.1);
+  border: 1px solid rgba(122, 162, 255, 0.3);
+  border-radius: 3px;
+  color: #7aa2ff;
+  font-size: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+#componentFilters button:hover {
+  background: rgba(122, 162, 255, 0.2);
+  border-color: rgba(122, 162, 255, 0.5);
+}
+
+#componentFilterList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 #logFilters label {

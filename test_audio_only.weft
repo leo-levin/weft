@@ -1,0 +1,4 @@
+// Audio only - no display statement
+freq<f> = 440
+wave<t> = sin(me@time * freq@f * 6.28)
+play(audio: wave@t * 0.3)

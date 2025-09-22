@@ -1,0 +1,5 @@
+// Test route-aware audio compilation
+freq<f> = 440
+wave<t> = sin(me@time * freq@f * 6.28)
+play(wave@t * 0.1)
+display(0, 0, 0)

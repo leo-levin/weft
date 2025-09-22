@@ -3,6 +3,7 @@ export class ClockDisplay {
     this.env = env;
     this.isPlaying = false;
     this.renderer = null;
+    this.audioRenderer = null;
 
     // Get DOM elements
     this.playPauseBtn = document.getElementById('playPauseBtn');
@@ -15,6 +16,10 @@ export class ClockDisplay {
 
   setRenderer(renderer) {
     this.renderer = renderer;
+  }
+
+  setAudioRenderer(audioRenderer) {
+    this.audioRenderer = audioRenderer;
   }
 
   setupEventListeners() {
@@ -33,7 +38,7 @@ export class ClockDisplay {
     });
   }
 
-  togglePlayPause() {
+  async togglePlayPause() {
     if (!this.renderer) return;
 
     // Check current renderer state
@@ -41,11 +46,21 @@ export class ClockDisplay {
 
     if (currentlyRunning) {
       this.renderer.stop();
+      if (this.audioRenderer) {
+        this.audioRenderer.stop();
+      }
       this.isPlaying = false;
       this.playPauseBtn.textContent = '▶';
       this.playPauseBtn.classList.remove('playing');
     } else {
       this.renderer.start();
+      if (this.audioRenderer) {
+        try {
+          await this.audioRenderer.start();
+        } catch (error) {
+          console.warn('🎵 Failed to start audio renderer:', error);
+        }
+      }
       this.isPlaying = true;
       this.playPauseBtn.textContent = '⏸';
       this.playPauseBtn.classList.add('playing');

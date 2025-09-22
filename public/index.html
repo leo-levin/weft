@@ -56,10 +56,19 @@
           <div id="debugTabContent">
             <div id="logsTab" class="debug-tab-pane active">
               <div id="logFilters">
-                <label><input type="checkbox" id="filterDebug" checked> DEBUG</label>
-                <label><input type="checkbox" id="filterInfo" checked> INFO</label>
-                <label><input type="checkbox" id="filterWarn" checked> WARN</label>
-                <label><input type="checkbox" id="filterError" checked> ERROR</label>
+                <div id="levelFilters">
+                  <strong>Levels:</strong>
+                  <label><input type="checkbox" id="filterDebug" checked> DEBUG</label>
+                  <label><input type="checkbox" id="filterInfo" checked> INFO</label>
+                  <label><input type="checkbox" id="filterWarn" checked> WARN</label>
+                  <label><input type="checkbox" id="filterError" checked> ERROR</label>
+                </div>
+                <div id="componentFilters">
+                  <strong>Components:</strong>
+                  <button id="showAllComponents">All</button>
+                  <button id="hideAllComponents">None</button>
+                  <div id="componentFilterList"></div>
+                </div>
               </div>
               <div id="logOutput"></div>
             </div>
@@ -84,6 +93,7 @@
 <script type="module" src="../src/runtime/runtime.js"></script>
 <script type="module" src="../src/renderers/renderer.js"></script>
 <script type="module" src="../src/renderers/webgl-renderer.js"></script>
+<script type="module" src="../src/renderers/audio-worklet-renderer.js"></script>
 <script type="module" src="../src/ui/coordinate-probe.js"></script>
 <script type="module" src="../src/ui/main.js"></script>
 <script>

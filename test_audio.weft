@@ -1,0 +1,7 @@
+// Simple audio test - 440Hz sine wave
+freq<f> = 440
+wave<t> = sin(me@time * freq@f * 2 * 3.14159)
+play(audio: wave@t * 0.1)
+
+// Visual sync test
+display(wave@t + 1, 0, 0)

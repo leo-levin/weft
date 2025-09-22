@@ -6,6 +6,7 @@ class Logger {
     this.logs = [];
     this.maxLogs = 1000;
     this.filters = { debug: true, info: true, warn: true, error: true };
+    this.componentFilters = {}; // Empty means show all components
     this.autoScroll = true;
   }
 
@@ -36,11 +37,58 @@ class Logger {
     this.updateUI();
   }
 
+  setComponentFilters(componentFilters) {
+    this.componentFilters = { ...componentFilters };
+    this.updateUI();
+  }
+
+  getActiveComponents() {
+    // Get unique list of components from current logs
+    const components = [...new Set(this.logs.map(log => log.component))];
+    return components.sort();
+  }
+
+  // Convenience methods for component filtering
+  showOnlyComponent(component) {
+    this.componentFilters = { [component]: true };
+    this.updateUI();
+  }
+
+  showOnlyComponents(components) {
+    this.componentFilters = {};
+    components.forEach(component => {
+      this.componentFilters[component] = true;
+    });
+    this.updateUI();
+  }
+
+  hideComponent(component) {
+    delete this.componentFilters[component];
+    this.updateUI();
+  }
+
+  showAllComponents() {
+    this.componentFilters = {};
+    this.updateUI();
+  }
+
   updateUI() {
+    this.updateComponentFilterUI();
+
     const logOutput = document.getElementById('logOutput');
     if (!logOutput) return;
 
-    const filteredLogs = this.logs.filter(log => this.filters[log.level]);
+    const filteredLogs = this.logs.filter(log => {
+      // Filter by log level
+      if (!this.filters[log.level]) return false;
+
+      // Filter by component (if any component filters are set)
+      if (Object.keys(this.componentFilters).length > 0) {
+        return this.componentFilters[log.component] === true;
+      }
+
+      return true;
+    });
     
     logOutput.innerHTML = filteredLogs.map(log => {
       let dataStr = '';
@@ -71,6 +119,83 @@ class Logger {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  updateComponentFilterUI() {
+    const componentFilterList = document.getElementById('componentFilterList');
+    if (!componentFilterList) return;
+
+    const components = this.getActiveComponents();
+
+    // Clear existing filters
+    componentFilterList.innerHTML = '';
+
+    // Create checkbox for each component
+    components.forEach(component => {
+      const label = document.createElement('label');
+      label.style.fontSize = '10px';
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.gap = '4px';
+      label.style.color = '#9aa4b2';
+      label.style.cursor = 'pointer';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.style.width = '12px';
+      checkbox.style.height = '12px';
+      checkbox.style.accentColor = '#7aa2ff';
+
+      // Check if this component should be shown
+      const isChecked = Object.keys(this.componentFilters).length === 0 ||
+                       this.componentFilters[component] === true;
+      checkbox.checked = isChecked;
+
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) {
+          this.componentFilters[component] = true;
+        } else {
+          delete this.componentFilters[component];
+        }
+        this.updateUI();
+      });
+
+      const text = document.createTextNode(component);
+
+      label.appendChild(checkbox);
+      label.appendChild(text);
+      componentFilterList.appendChild(label);
+    });
+
+    // Setup All/None buttons
+    this.setupComponentFilterButtons();
+  }
+
+  setupComponentFilterButtons() {
+    const showAllBtn = document.getElementById('showAllComponents');
+    const hideAllBtn = document.getElementById('hideAllComponents');
+
+    if (showAllBtn && !showAllBtn.dataset.listenerAdded) {
+      showAllBtn.addEventListener('click', () => {
+        this.componentFilters = {};
+        this.updateUI();
+      });
+      showAllBtn.dataset.listenerAdded = 'true';
+    }
+
+    if (hideAllBtn && !hideAllBtn.dataset.listenerAdded) {
+      hideAllBtn.addEventListener('click', () => {
+        const components = this.getActiveComponents();
+        this.componentFilters = {};
+        // Set all to false by not including them (empty object shows all)
+        // But we need at least one component to be shown, so show only first
+        if (components.length > 0) {
+          this.componentFilters[components[0]] = true;
+        }
+        this.updateUI();
+      });
+      hideAllBtn.dataset.listenerAdded = 'true';
+    }
   }
 
   updateScopeViewer(scopeStack) {
@@ -229,6 +354,7 @@ class Env {
     this.parameters = new Map(); // Parameter strands registry
     this.pragmas = []; // Store pragmas from parsing
     this.displayFns = null;
+    this.playStatements = []; // Store compiled play statements for audio renderer
     this.defaultSampler = null;
     this.audio = { element:null, ctx:null, analyser:null, intensity:0 };
     this.mouse = { x:0.5, y:0.5 };
@@ -1848,6 +1974,7 @@ class Executor {
     this.ast = ast;
     this.env.instances.clear();
     this.env.displayFns = null;
+    this.env.playStatements = [];
 
     // Process pragmas for parameter strands
     if (ast.pragmas) {
@@ -2139,7 +2266,12 @@ class Executor {
         continue;
       }
       if(s.type==="PlayStmt"){
-        logger.info('PlayStmt', `Processing play statement with ${s.args.length} arguments - not implemented yet`);
+        logger.info('PlayStmt', `Processing play statement with ${s.args.length} arguments`);
+
+        // Store the PlayStmt for the audio renderer
+        this.env.playStatements.push(s);
+
+        logger.info('PlayStmt', 'Play statement stored for audio rendering');
         continue;
       }
       if(s.type==="ComputeStmt"){
@@ -2148,7 +2280,9 @@ class Executor {
       }
       throw new RuntimeError(`Unhandled statement type ${s.type}`);
     }
-    if(!this.env.displayFns) throw new RuntimeError("No render(...) or display(...) statement found.");
+    if(!this.env.displayFns && (!this.env.playStatements || this.env.playStatements.length === 0)) {
+      throw new RuntimeError("No render(...), display(...), or play(...) statement found.");
+    }
   }
 }
 
