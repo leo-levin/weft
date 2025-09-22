@@ -6,6 +6,7 @@ import { WebGLRenderer } from '../renderers/webgl-renderer.js';
 import { WidgetManager } from './widget-manager.js';
 import { HoverDetector } from './hover-detector.js';
 import { CoordinateProbe } from './coordinate-probe.js';
+import { ClockDisplay } from './clock-display.js';
 
 console.log('✅ Starting WEFT application...');
 
@@ -31,6 +32,7 @@ let renderer;
 let widgetManager;
 let hoverDetector;
 let coordinateProbe;
+let clockDisplay;
 
 // Function to update AST viewer with clean, formatted JSON
 function updateASTViewer(ast) {
@@ -152,6 +154,13 @@ function initializeRenderer() {
     coordinateProbe = new CoordinateProbe(canvas, env, renderer, executor);
     console.log('✅ Coordinate probe initialized');
   }
+
+  // Initialize clock display for time control
+  if (!clockDisplay) {
+    clockDisplay = new ClockDisplay(env);
+    clockDisplay.setRenderer(renderer);
+    console.log('✅ Clock display initialized');
+  }
 }
 
 const interpToggle = document.getElementById('interpToggle');
@@ -271,6 +280,11 @@ function runCode(){
       renderer = new WebGLRenderer(canvas, env);
     }
 
+    // Update clock display with new renderer
+    if (clockDisplay) {
+      clockDisplay.setRenderer(renderer);
+    }
+
     renderer.start();
     logger.info('Main', 'Program execution completed successfully');
     
@@ -315,13 +329,13 @@ function defaultCode() {
   return `// Test the fixed general structure and logging
 // This uses the standard library circle spindle with custom output names
 
-circle(me.x, me.y, 0.5, 0.5, 0.3) :: myCircle<:result:val>
+circle(me@x, me@y, 0.5, 0.5, 0.3) :: myCircle<:result:val>
 
 // Test threshold spindle with different output names
 threshold(myCircle@val, 0.5) :: myThresh<:output:filtered>
 
 // Create a compose instance with arbitrary output names
-compose(myThresh@filtered, sin(me.t), cos(me.x * 10)) :: colors<:red:green:blue>
+compose(myThresh@filtered, sin(me@time), cos(me@x * 10)) :: colors<:red:green:blue>
 
 // Display using the instance with 3 outputs
 display(colors)`;

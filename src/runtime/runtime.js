@@ -233,21 +233,74 @@ class Env {
     this.audio = { element:null, ctx:null, analyser:null, intensity:0 };
     this.mouse = { x:0.5, y:0.5 };
     this.frame = 0;
+    this.startTime = Date.now(); // Absolute start time
     this.boot = performance.now();
     this.targetFps = 30;
     this.resW = 300; this.resH = 300;
     this.mediaCanvas = document.createElement('canvas');
     this.mediaCtx = this.mediaCanvas.getContext('2d', { willReadFrequently: true });
     this.mediaImageData = null;
+
+    // Time configuration
+    this.loop = 600; // Default loop duration in frames
+    this.bpm = 120; // Default BPM
+    this.timesig_num = 4; // Time signature numerator
+    this.timesig_den = 4; // Time signature denominator
+
+    // Create the built-in "me" instance
+    this.createMeInstance();
   }
   
+  // Create the built-in "me" instance with time variables
+  createMeInstance() {
+    const meOuts = {
+      // Spatial coordinates (normalized 0-1)
+      x: { kind: 'strand', evalAt: (me, _scope) => me.x },
+      y: { kind: 'strand', evalAt: (me, _scope) => me.y },
+
+      // Absolute time (since program start)
+      abstime: { kind: 'strand', evalAt: (_me, _scope) => (Date.now() - this.startTime) / 1000 },
+      absframe: { kind: 'strand', evalAt: (_me, _scope) => this.frame },
+
+      // Looped time (within current loop)
+      time: { kind: 'strand', evalAt: (_me, _scope) => (this.frame % this.loop) / this.targetFps },
+      frame: { kind: 'strand', evalAt: (_me, _scope) => this.frame % this.loop },
+
+      // Display properties
+      width: { kind: 'strand', evalAt: (_me, _scope) => this.resW },
+      height: { kind: 'strand', evalAt: (_me, _scope) => this.resH },
+      fps: { kind: 'strand', evalAt: (_me, _scope) => this.targetFps },
+
+      // Loop configuration
+      loop: { kind: 'strand', evalAt: (_me, _scope) => this.loop },
+
+      // Musical time
+      bpm: { kind: 'strand', evalAt: (_me, _scope) => this.bpm },
+      timesig_num: { kind: 'strand', evalAt: (_me, _scope) => this.timesig_num },
+      timesig_den: { kind: 'strand', evalAt: (_me, _scope) => this.timesig_den },
+      beat: { kind: 'strand', evalAt: (_me, _scope) => {
+        const absTime = (Date.now() - this.startTime) / 1000;
+        const beatsPerSecond = this.bpm / 60;
+        return Math.floor(absTime * beatsPerSecond) % this.timesig_num;
+      }},
+      measure: { kind: 'strand', evalAt: (_me, _scope) => {
+        const absTime = (Date.now() - this.startTime) / 1000;
+        const beatsPerSecond = this.bpm / 60;
+        return Math.floor(absTime * beatsPerSecond / this.timesig_num);
+      }}
+    };
+
+    const meInstance = makeSimpleInstance('me', meOuts);
+    this.instances.set('me', meInstance);
+  }
+
   // Parameter strand management
   createParameterStrand(name, config) {
     const param = new ParameterStrand(name, config.defaultValue || 0, config);
     this.parameters.set(name, param);
     return param;
   }
-  
+
   getParameterStrand(name) {
     return this.parameters.get(name);
   }
@@ -496,18 +549,6 @@ function evalExprToStrand(node, env) {
       }};
     }
 
-    case "Me": {
-      const field=node.field;
-      return { kind:'strand', evalAt(me, _scope) {
-        if(field==="x") return me.x;
-        if(field==="y") return me.y;
-        if(field==="t") return me.t;
-        if(field==="frames") return me.frames;
-        if(field==="width") return me.width;
-        if(field==="height") return me.height;
-        throw new RuntimeError(`Invalid me.${field}`);
-      }};
-    }
 
     case "Mouse": {
       const field=node.field;
@@ -755,11 +796,6 @@ function compileToJS(node, env, resolvedVars = new Map()) {
     case "Num": return String(node.v);
     case "Str": return `"${node.v.replace(/"/g, '\\"')}"`;
 
-    case "Me": {
-      const field = node.field;
-      return field === "x" ? "x" : field === "y" ? "y" : field === "t" ? "t" :
-             field === "frames" ? "f" : field === "width" ? "w" : field === "height" ? "h" : "0";
-    }
 
     case "Mouse": {
       return node.field === "x" ? "mx" : node.field === "y" ? "my" : "0";
@@ -1515,6 +1551,87 @@ const BuiltinSpindles = {
     logger.updateInstanceViewer(env.instances);
     return inst;
   },
+
+  env: (env, args, instName, outs) => {
+    // Built-in function to create the me instance with environment outputs
+    // Usage: me<x,y,time,frame,fps,loop,bpm,etc> = env()
+    logger.info('Builtin', `Creating env instance '${instName}'`, { outs });
+
+    // This is essentially the same as the me instance, but allows custom output mapping
+    const envOuts = {};
+
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
+
+      // Map output names to environment values
+      switch(outName) {
+        case 'x':
+          envOuts[outName] = { kind: 'strand', evalAt: (me, _scope) => me.x };
+          break;
+        case 'y':
+          envOuts[outName] = { kind: 'strand', evalAt: (me, _scope) => me.y };
+          break;
+        case 'abstime':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => (Date.now() - env.startTime) / 1000 };
+          break;
+        case 'absframe':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.frame };
+          break;
+        case 'time':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => (env.frame % env.loop) / env.targetFps };
+          break;
+        case 'frame':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.frame % env.loop };
+          break;
+        case 'width':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.resW };
+          break;
+        case 'height':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.resH };
+          break;
+        case 'fps':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.targetFps };
+          break;
+        case 'loop':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.loop };
+          break;
+        case 'bpm':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.bpm };
+          break;
+        case 'timesig_num':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.timesig_num };
+          break;
+        case 'timesig_den':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => env.timesig_den };
+          break;
+        case 'beat':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => {
+            const absTime = (Date.now() - env.startTime) / 1000;
+            const beatsPerSecond = env.bpm / 60;
+            return Math.floor(absTime * beatsPerSecond) % env.timesig_num;
+          }};
+          break;
+        case 'measure':
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => {
+            const absTime = (Date.now() - env.startTime) / 1000;
+            const beatsPerSecond = env.bpm / 60;
+            return Math.floor(absTime * beatsPerSecond / env.timesig_num);
+          }};
+          break;
+        default:
+          // For unknown outputs, default to 0
+          envOuts[outName] = { kind: 'strand', evalAt: (_me, _scope) => 0 };
+          logger.warn('Builtin', `Unknown env output '${outName}', defaulting to 0`);
+      }
+
+      logger.debug('Builtin', `Mapped env output '${outName}'`);
+    }
+
+    const inst = makeSimpleInstance(instName, envOuts);
+    env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
+    return inst;
+  },
 };
 const fallbackSampler = new Sampler(); fallbackSampler.fallbackPattern();
 
@@ -1762,6 +1879,38 @@ class Executor {
       if(s.type==="SpindleDef") continue;
       if(s.type==="Direct"){
         const fx = compileExprOptimized(s.expr, this.env);
+
+        // Special handling for 'me' instance parameter updates
+        if (s.name === 'me') {
+          console.log('🔧 Processing me instance update:', s.outs);
+          for (const outName of s.outs) {
+            if (outName === 'loop' || outName === 'bpm' || outName === 'fps' || outName === 'timesig_num' || outName === 'timesig_den') {
+              // Evaluate the expression to get the value and update the environment
+              const value = toScalar(fx({}, this.env));
+              console.log(`🔧 Setting me.${outName} =`, value);
+              if (outName === 'loop') {
+                this.env.loop = Math.max(1, Math.floor(value));
+                console.log(`Updated me loop to:`, this.env.loop);
+              } else if (outName === 'bpm') {
+                this.env.bpm = Math.max(1, value);
+                console.log(`Updated me bpm to:`, this.env.bpm);
+              } else if (outName === 'fps') {
+                this.env.targetFps = Math.max(1, Math.min(120, value));
+                console.log(`Updated me fps to:`, this.env.targetFps);
+              } else if (outName === 'timesig_num') {
+                this.env.timesig_num = Math.max(1, Math.floor(value));
+                console.log(`Updated me timesig_num to:`, this.env.timesig_num);
+              } else if (outName === 'timesig_den') {
+                this.env.timesig_den = Math.max(1, Math.floor(value));
+                console.log(`Updated me timesig_den to:`, this.env.timesig_den);
+              }
+            }
+          }
+          // Recreate the me instance with updated values
+          this.env.createMeInstance();
+          continue; // Don't process normal instance binding for me parameters
+        }
+
         let existingInst = this.env.instances.get(s.name);
         const outs = existingInst ? {...existingInst.outs} : {};
         if(s.outs.length===1){
@@ -1899,6 +2048,51 @@ class Executor {
         logger.info('Display', 'Display functions configured successfully');
         continue;
       }
+      if(s.type==="DisplayStmt"){
+        logger.info('DisplayStmt', `Processing display statement with ${s.args.length} arguments`);
+        // Handle DisplayStmt - this is the main rendering statement
+        let fr, fg, fb;
+
+        if(s.args.length === 1) {
+          // Check if single argument is an instance with outputs
+          const arg = s.args[0];
+          if(arg.type === "Var") {
+            const inst = this.env.instances.get(arg.name);
+            if(inst && inst.outs) {
+              const outputs = Object.keys(inst.outs);
+              logger.info('DisplayStmt', `Instance '${arg.name}' has outputs: [${outputs.join(', ')}]`);
+
+              if(outputs.length >= 3) {
+                // Use the first 3 outputs for r,g,b
+                const [rOut, gOut, bOut] = outputs;
+                logger.info('DisplayStmt', `Mapping: r=${rOut}, g=${gOut}, b=${bOut}`);
+                fr = compileExprOptimized({type: "StrandAccess", base: arg, out: rOut}, this.env);
+                fg = compileExprOptimized({type: "StrandAccess", base: arg, out: gOut}, this.env);
+                fb = compileExprOptimized({type: "StrandAccess", base: arg, out: bOut}, this.env);
+              } else {
+                logger.warn('DisplayStmt', `Instance '${arg.name}' has insufficient outputs for r,g,b`);
+                fr = fg = fb = () => 0;
+              }
+            } else {
+              // Single expression
+              const compiledExpr = compileExprOptimized(arg, this.env);
+              fr = fg = fb = compiledExpr;
+            }
+          } else {
+            // Single expression
+            const compiledExpr = compileExprOptimized(arg, this.env);
+            fr = fg = fb = compiledExpr;
+          }
+        } else if(s.args.length >= 3) {
+          fr = compileExprOptimized(s.args[0], this.env);
+          fg = compileExprOptimized(s.args[1], this.env);
+          fb = compileExprOptimized(s.args[2], this.env);
+        }
+
+        this.env.displayFns = [fr, fg, fb];
+        logger.info('DisplayStmt', 'Display functions configured successfully');
+        continue;
+      }
       if(s.type==="RenderStmt"){
         logger.info('RenderStmt', `Processing render statement with ${s.args.length} arguments`);
         // Handle RenderStmt the same way as Display for now
@@ -1950,33 +2144,6 @@ class Executor {
       }
       if(s.type==="ComputeStmt"){
         logger.info('ComputeStmt', `Processing compute statement with ${s.args.length} arguments - not implemented yet`);
-        continue;
-      }
-      if(s.type==="EnvStmt"){
-        console.log('Processing EnvStmt:', s.field, s.expr);
-        if(s.field === "frames") {
-          const valueExpr = compileExprOptimized(s.expr, this.env);
-          // Evaluate the expression to get the target fps
-          const fps = toScalar(valueExpr({}, this.env));
-          this.env.targetFps = Math.max(1, Math.min(120, fps)); // Clamp between 1-120 fps
-          console.log('Set target FPS to:', this.env.targetFps);
-        }
-        if(s.field === "width") {
-          const valueExpr = compileExprOptimized(s.expr, this.env);
-          // Evaluate the expression to get the target width
-          const width = toScalar(valueExpr({}, this.env));
-          // Use reasonable limits - WebGL usually supports up to 16384 but let's be conservative
-          this.env.resW = Math.max(1, Math.min(8192, Math.floor(width)));
-          console.log('Set width to:', this.env.resW);
-        }
-        if(s.field === "height") {
-          const valueExpr = compileExprOptimized(s.expr, this.env);
-          // Evaluate the expression to get the target height
-          const height = toScalar(valueExpr({}, this.env));
-          // Use reasonable limits - WebGL usually supports up to 16384 but let's be conservative
-          this.env.resH = Math.max(1, Math.min(8192, Math.floor(height)));
-          console.log('Set height to:', this.env.resH);
-        }
         continue;
       }
       throw new RuntimeError(`Unhandled statement type ${s.type}`);

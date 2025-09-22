@@ -32,13 +32,13 @@ Weft {
                   | ident sym<"("> ListOf<Expr, ","> sym<")"> sym<"::"> ident OutputSpec -- call
                   | ident sym<"<"> digit+ sym<">"> sym<"("> ListOf<BundleOrExpr, ","> sym<")"> sym<"::"> ident OutputSpec -- multiCall
 
-  Mutation = Assignment | EnvAssignment
+  Mutation = Assignment
   Assignment = ident AssignOp Expr
   AssignOp = sym<"="> | sym<"+="> | sym<"-="> | sym<"*="> | sym<"/=">
-  EnvAssignment = kw<"me"> sym<"."> ident sym<"==="> Expr
 
-  SideEffect = RenderStmt | PlayStmt | ComputeStmt
+  SideEffect = DisplayStmt | RenderStmt | PlayStmt | ComputeStmt
 
+  DisplayStmt = kw<"display"> sym<"("> ListOf<StmtArg, ","> sym<")">
   RenderStmt = kw<"render"> sym<"("> ListOf<StmtArg, ","> sym<")">
   PlayStmt = kw<"play"> sym<"("> ListOf<StmtArg, ","> sym<")">
   ComputeStmt = kw<"compute"> sym<"("> ListOf<StmtArg, ","> sym<")">
@@ -86,7 +86,6 @@ Weft {
               | ident sym<"@"> ident                            -- strand
               | ident sym<"("> ListOf<Expr, ","> sym<")">       -- call
               | sym<"<"> ListOf<Expr, ","> sym<">">             -- bundle
-              | kw<"me"> sym<"."> ident                         -- env
               | kw<"mouse"> sym<"@"> ident                      -- mouse
               | ident                                           -- var
               | number
@@ -96,7 +95,7 @@ Weft {
   ident = ~keyword letter identRest* space*
   identRest = letter | digit | "_"
   keyword = "spindle" | "if" | "then" | "else" | "not" | "and" | "or"
-          | "render" | "play" | "compute" | "let" | "for" | "in" | "to" | "me" | "mouse"
+          | "display" | "render" | "play" | "compute" | "let" | "for" | "in" | "to" | "mouse"
 
   number = numCore space*
   numCore = digit+ "." digit* expPart?    -- d1
@@ -388,11 +387,12 @@ const sem = g.createSemantics().addOperation('ast', {
       };
     },
 
-    EnvAssignment(_me, _dot, field, _eq, expr) {
-      return { type: 'EnvStmt', field: field.ast(), expr: expr.ast() };
-    },
 
     // Side Effects
+    DisplayStmt(_kw, _lp, args, _rp) {
+      return new DisplayStmt(args.ast());
+    },
+
     RenderStmt(_kw, _lp, args, _rp) {
       return new RenderStmt(args.ast());
     },
@@ -509,9 +509,6 @@ const sem = g.createSemantics().addOperation('ast', {
       return { type: 'Bundle', items: items.ast() };
     },
 
-    PrimaryExpr_env(_me, _dot, field) {
-      return { type: 'Me', field: field.ast() };
-    },
 
     PrimaryExpr_mouse(_mouse, _at, field) {
       return { type: 'Mouse', field: field.ast() };

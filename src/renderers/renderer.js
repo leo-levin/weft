@@ -15,6 +15,7 @@ class Renderer {
     this.frameTimeAccumulator = 0;
     this.lastResW = env.resW;
     this.lastResH = env.resH;
+    this.lastTargetFps = env.targetFps;
   }
   start(){ this.running=true; this.loop(); }
   stop(){ this.running=false; }
@@ -24,6 +25,12 @@ class Renderer {
     const now = performance.now();
     const targetFrameTime = 1000 / this.env.targetFps; // ms per frame
     const deltaTime = now - this.lastFrameTime;
+
+    // Debug: Log FPS changes
+    if (this.lastTargetFps !== this.env.targetFps) {
+      console.log(`🎬 Renderer: Target FPS changed from ${this.lastTargetFps} to ${this.env.targetFps}`);
+      this.lastTargetFps = this.env.targetFps;
+    }
 
     this.frameTimeAccumulator += deltaTime;
 

@@ -16,6 +16,9 @@ class WebGLRenderer {
     this.frames = 0;
     this.lastTime = performance.now();
     this.fps = 0;
+    this.lastFrameTime = performance.now();
+    this.frameTimeAccumulator = 0;
+    this.lastTargetFps = env.targetFps;
 
     this.initWebGL();
   }
@@ -156,26 +159,6 @@ class WebGLRenderer {
         const numValue = node.v !== undefined ? node.v : node.value;
         return numValue.toString() + (Number.isInteger(numValue) ? '.0' : '');
 
-      case 'Me':
-      case 'MeExpr':
-        const meField = node.field;
-        const meKey = `me.${meField}`;
-
-        // Check if we're inside a spindle function and have coordinate parameters
-        if (localScope[meKey]) {
-          return localScope[meKey];
-        }
-
-        switch(meField) {
-          case 'x': return 'uv.x';
-          case 'y': return 'uv.y';
-          case 't': return 'u_time';
-          case 'frames': return 'u_frames';
-          case 'width': return 'u_resolution.x';
-          case 'height': return 'u_resolution.y';
-          case 'aspect': return '(u_resolution.x / u_resolution.y)';
-          default: return '0.0';
-        }
 
       case 'Mouse':
       case 'MouseExpr':
@@ -398,6 +381,30 @@ return powerResult;
         const baseName = typeof node.base === 'string' ? node.base : node.base.name;
         const outputName = typeof node.out === 'string' ? node.out : node.out.name;
         const key = `${baseName}@${outputName}`;
+
+        // Special handling for me@ outputs - map to uniforms
+        if (baseName === 'me') {
+          switch(outputName) {
+            case 'x': return 'uv.x';
+            case 'y': return 'uv.y';
+            case 'abstime': return 'u_abstime';
+            case 'absframe': return 'u_absframe';
+            case 'time': return 'u_time';
+            case 'frame': return 'u_frame';
+            case 'width': return 'u_resolution.x';
+            case 'height': return 'u_resolution.y';
+            case 'fps': return 'u_fps';
+            case 'loop': return 'u_loop';
+            case 'bpm': return 'u_bpm';
+            case 'timesig_num': return 'u_timesig_num';
+            case 'timesig_den': return 'u_timesig_den';
+            case 'beat': return 'u_beat';
+            case 'measure': return 'u_measure';
+            default:
+              logger.warn('WebGL', `Unknown me output '${outputName}', defaulting to 0.0`);
+              return '0.0';
+          }
+        }
 
         // Check if this is a parameter instance access (e.g., lvl@l)
         if (env.instances && env.instances.has(baseName)) {
@@ -730,7 +737,16 @@ const displayStmt = renderStmt || this.env.displayAst;
 
       uniform vec2 u_resolution;
       uniform float u_time;
-      uniform float u_frames;
+      uniform float u_frame;
+      uniform float u_abstime;
+      uniform float u_absframe;
+      uniform float u_fps;
+      uniform float u_loop;
+      uniform float u_bpm;
+      uniform float u_timesig_num;
+      uniform float u_timesig_den;
+      uniform float u_beat;
+      uniform float u_measure;
       uniform vec2 u_mouse;
       ${textureUniforms.join('\n      ')}
       ${parameterUniforms.join('\n      ')}
@@ -1207,7 +1223,16 @@ ${glslCode.join('\n')}
     this.uniforms = {
       resolution: gl.getUniformLocation(this.program, 'u_resolution'),
       time: gl.getUniformLocation(this.program, 'u_time'),
-      frames: gl.getUniformLocation(this.program, 'u_frames'),
+      frame: gl.getUniformLocation(this.program, 'u_frame'),
+      abstime: gl.getUniformLocation(this.program, 'u_abstime'),
+      absframe: gl.getUniformLocation(this.program, 'u_absframe'),
+      fps: gl.getUniformLocation(this.program, 'u_fps'),
+      loop: gl.getUniformLocation(this.program, 'u_loop'),
+      bpm: gl.getUniformLocation(this.program, 'u_bpm'),
+      timesig_num: gl.getUniformLocation(this.program, 'u_timesig_num'),
+      timesig_den: gl.getUniformLocation(this.program, 'u_timesig_den'),
+      beat: gl.getUniformLocation(this.program, 'u_beat'),
+      measure: gl.getUniformLocation(this.program, 'u_measure'),
       mouse: gl.getUniformLocation(this.program, 'u_mouse')
     };
 
@@ -1252,8 +1277,22 @@ ${glslCode.join('\n')}
 
     // Set uniforms
     gl.uniform2f(this.uniforms.resolution, width, height);
-    gl.uniform1f(this.uniforms.time, env.time());
-    gl.uniform1f(this.uniforms.frames, env.frame / env.targetFps);
+
+    // Time uniforms
+    const absTime = (Date.now() - env.startTime) / 1000;
+    const beatsPerSecond = env.bpm / 60;
+    gl.uniform1f(this.uniforms.time, (env.frame % env.loop) / env.targetFps);
+    gl.uniform1f(this.uniforms.frame, env.frame % env.loop);
+    gl.uniform1f(this.uniforms.abstime, absTime);
+    gl.uniform1f(this.uniforms.absframe, env.frame);
+    gl.uniform1f(this.uniforms.fps, env.targetFps);
+    gl.uniform1f(this.uniforms.loop, env.loop);
+    gl.uniform1f(this.uniforms.bpm, env.bpm);
+    gl.uniform1f(this.uniforms.timesig_num, env.timesig_num);
+    gl.uniform1f(this.uniforms.timesig_den, env.timesig_den);
+    gl.uniform1f(this.uniforms.beat, Math.floor(absTime * beatsPerSecond) % env.timesig_num);
+    gl.uniform1f(this.uniforms.measure, Math.floor(absTime * beatsPerSecond / env.timesig_num));
+
     gl.uniform2f(this.uniforms.mouse, env.mouse.x, env.mouse.y);
     
     // Set parameter uniforms
@@ -1292,18 +1331,36 @@ ${glslCode.join('\n')}
     if (!this.running) return;
 
     const now = performance.now();
-    this.render();
+    const targetFrameTime = 1000 / this.env.targetFps; // ms per frame
+    const deltaTime = now - this.lastFrameTime;
 
-    // Update FPS counter
-    this.frames++;
-    if (now - this.lastTime > 500) {
-      this.fps = Math.round(this.frames * 1000 / (now - this.lastTime));
-      document.getElementById('fpsPill').textContent = `FPS: ${this.fps}`;
-      document.getElementById('perfPill').textContent = `GPU Accelerated`;
-      this.frames = 0;
-      this.lastTime = now;
+    // Debug: Log FPS changes
+    if (this.lastTargetFps !== this.env.targetFps) {
+      console.log(`🎬 WebGL Renderer: Target FPS changed from ${this.lastTargetFps} to ${this.env.targetFps}`);
+      this.lastTargetFps = this.env.targetFps;
     }
 
+    this.frameTimeAccumulator += deltaTime;
+
+    // Only render if enough time has accumulated for the target frame rate
+    if (this.frameTimeAccumulator >= targetFrameTime) {
+      this.render();
+
+      // Update FPS counter
+      this.frames++;
+      if (now - this.lastTime > 500) {
+        this.fps = Math.round(this.frames * 1000 / (now - this.lastTime));
+        document.getElementById('fpsPill').textContent = `FPS: ${this.fps}`;
+        document.getElementById('perfPill').textContent = `GPU Accelerated`;
+        this.frames = 0;
+        this.lastTime = now;
+      }
+
+      // Subtract one frame time but keep any remainder to prevent drift
+      this.frameTimeAccumulator -= targetFrameTime;
+    }
+
+    this.lastFrameTime = now;
     requestAnimationFrame(() => this.loop());
   }
 }
