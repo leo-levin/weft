@@ -15,14 +15,10 @@ class WidgetManager {
   }
 
   init() {
-    // No panel container needed - just popovers
-    // Listen for parameter updates
     this.setupParameterListeners();
   }
 
   createToolbarToggle() {
-    // No toolbar toggle needed - parameters appear as popovers on hover
-    // The toggle button concept doesn't apply to hover-based popovers
     return;
   }
 
@@ -33,7 +29,6 @@ class WidgetManager {
   }
 
   setupParameterListeners() {
-    // Monitor environment for new parameters
     this.updateInterval = setInterval(() => {
       this.updateWidgets();
     }, 100);
@@ -64,7 +59,6 @@ class WidgetManager {
     const { config } = paramStrand;
     const { range = [0, 1], label = name } = config;
 
-    // Create refined slider structure
     const sliderGroup = document.createElement('div');
     sliderGroup.className = 'slider-group';
 

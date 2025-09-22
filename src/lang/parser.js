@@ -64,7 +64,7 @@ Weft {
 
   ComparisonExpr = ArithExpr CmpOp ArithExpr -- compare
                  | ArithExpr
-  CmpOp = sym<"==="> | sym<"=="> | sym<"!="> | sym<"<="> | sym<">="> | sym<"<"> | sym<">">
+  CmpOp = sym<"==="> | sym<"=="> | sym<"!="> | sym<"<<="> | sym<">>="> | sym<"<<"> | sym<">>">
 
   ArithExpr = AddExpr
   AddExpr = AddExpr AddOp MulExpr  -- addsub
@@ -244,19 +244,30 @@ function extractPragmas(sourceCode) {
   return pragmas;
 }
 
+// Bundle expansion will be handled in post-processing to avoid parser corruption
+
 const sem = g.createSemantics().addOperation('ast', {
   Program(stmts) {
-    // Flatten any MultiCallExpanded nodes into individual statements
-    const flattened = [];
-    for (const stmt of stmts.children) {
-      const ast = stmt.ast();
-      if (ast.type === 'MultiCallExpanded') {
-        flattened.push(...ast.statements);
-      } else {
-        flattened.push(ast);
+    // Simple single-pass parsing - no expansion during parse
+    console.log(`🚀 Program parsing started with ${stmts.children.length} statements`);
+    const statements = [];
+    for (let i = 0; i < stmts.children.length; i++) {
+      const stmt = stmts.children[i];
+      console.log(`📝 Processing statement ${i + 1}: ${stmt.sourceString.substring(0, 50)}...`);
+      try {
+        const ast = stmt.ast();
+        if (ast.type === 'MultiCallExpanded') {
+          statements.push(...ast.statements);
+        } else {
+          statements.push(ast);
+        }
+        console.log(`✅ Statement ${i + 1} parsed successfully as ${ast.type}`);
+      } catch (error) {
+        console.error(`❌ Statement ${i + 1} failed to parse:`, error.message);
+        throw error;
       }
     }
-    return new Program(flattened);
+    return new Program(statements);
   },
 
   // Use Ohm's built-in ListOf handling
@@ -287,6 +298,8 @@ const sem = g.createSemantics().addOperation('ast', {
     },
 
     InstanceBinding_direct(name, _sp1, outputs, _sp2, _eq, _sp3, expr) {
+      // Parse as regular Direct statement - expansion happens in post-processing
+      console.log(`📋 Parsing direct: ${name.sourceString} with outputs: ${outputs.sourceString} = ${expr.sourceString}`);
       return {
         type: 'Direct',
         name: name.ast(),
@@ -296,42 +309,14 @@ const sem = g.createSemantics().addOperation('ast', {
     },
 
     InstanceBinding_call(func, _lp, args, _rp, _dc, inst, outputs) {
-      const parsedArgs = args.ast();
-      const outputStrands = outputs.ast();
-      
-      // Expand bundles in arguments and auto-expand instances to strands
-      const expandedArgs = [];
-      for (const arg of parsedArgs) {
-        if (arg.type === 'Bundle') {
-          // Bundle expands inline to its items
-          expandedArgs.push(...arg.items);
-        } else if (arg.type === 'Var') {
-          // Smart instance expansion: if we have multiple output strands,
-          // expand the instance variable to strand accesses
-          if (outputStrands.length > 1) {
-            // Expand instance to strand accesses matching output strands
-            for (const strandName of outputStrands) {
-              expandedArgs.push({
-                type: 'StrandAccess',
-                base: { type: 'Var', name: arg.name },
-                out: strandName
-              });
-            }
-          } else {
-            // Single output - keep as variable
-            expandedArgs.push(arg);
-          }
-        } else {
-          expandedArgs.push(arg);
-        }
-      }
-      
+      // Parse as regular call - expansion happens in post-processing
+      console.log(`🔧 Parsing call: ${func.sourceString} with args: ${args.sourceString}`);
       return {
         type: 'CallInstance',
         callee: func.ast(),
-        args: expandedArgs,
+        args: args.ast(),
         inst: inst.ast(),
-        outs: outputStrands
+        outs: outputs.ast()
       };
     },
 
@@ -505,15 +490,14 @@ const sem = g.createSemantics().addOperation('ast', {
     PrimaryExpr_call(func, _lp, args, _rp) {
       const parsedArgs = args.ast();
       
-      // Expand bundles in expression call arguments
+      // Expand explicit bundle literals only (not bundle variables)
       const expandedArgs = [];
       for (const arg of parsedArgs) {
         if (arg.type === 'Bundle') {
-          // Bundle expands inline to its items
+          // Bundle literals expand inline to their items
           expandedArgs.push(...arg.items);
         } else {
-          // For expression calls, we don't auto-expand instances 
-          // since we don't have output context to infer strand count
+          // All other arguments stay as-is (including variables)
           expandedArgs.push(arg);
         }
       }
@@ -565,19 +549,82 @@ const sem = g.createSemantics().addOperation('ast', {
     }
   });
 
+// Post-processing AST transformation for bundle expansion
+function transformAST(ast) {
+  // Track which variables are bundles
+  const bundleInfo = new Map();
+  
+  // First pass: collect bundle assignments
+  const transformedStatements = [];
+  for (const stmt of ast.statements) {
+    if (stmt.type === 'Direct' && stmt.expr.type === 'Bundle' && stmt.outs.length > 1) {
+      // This is a bundle assignment like newcol<r,g,b> = <0,1,1>
+      if (stmt.expr.items.length !== stmt.outs.length) {
+        throw new Error(`Bundle assignment has ${stmt.expr.items.length} values, expected ${stmt.outs.length} to match output strands`);
+      }
+      
+      // Record this as a bundle
+      bundleInfo.set(stmt.name, stmt.outs);
+      
+      // Expand into individual assignments
+      for (let i = 0; i < stmt.outs.length; i++) {
+        transformedStatements.push({
+          type: 'Direct',
+          name: stmt.name,
+          outs: [stmt.outs[i]],
+          expr: stmt.expr.items[i]
+        });
+      }
+    } else if (stmt.type === 'CallInstance') {
+      // Expand bundle arguments in calls
+      const expandedArgs = [];
+      for (const arg of stmt.args) {
+        if (arg.type === 'Bundle') {
+          // Bundle literals expand inline
+          expandedArgs.push(...arg.items);
+        } else if (arg.type === 'Var' && bundleInfo.has(arg.name)) {
+          // Bundle variables expand to strand accesses
+          const strands = bundleInfo.get(arg.name);
+          for (const strand of strands) {
+            expandedArgs.push({
+              type: 'StrandAccess',
+              base: { type: 'Var', name: arg.name },
+              out: strand
+            });
+          }
+        } else {
+          expandedArgs.push(arg);
+        }
+      }
+      
+      transformedStatements.push({
+        ...stmt,
+        args: expandedArgs
+      });
+    } else {
+      transformedStatements.push(stmt);
+    }
+  }
+  
+  return new Program(transformedStatements);
+}
+
 class Parser {
   static parse(src) {
     const m = g.match(src, 'Program');
     if (!m.succeeded()) throw new Error(m.message);
     const ast = sem(m).ast();
 
+    // Apply post-processing bundle expansion
+    const transformedAst = transformAST(ast);
+
     // Extract pragmas from source code
     const pragmas = extractPragmas(src);
 
     // Attach pragmas to AST for runtime access
-    ast.pragmas = pragmas;
+    transformedAst.pragmas = pragmas;
 
-    return ast;
+    return transformedAst;
   }
 }
 
