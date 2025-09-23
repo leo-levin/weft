@@ -161,6 +161,18 @@ class HoverDetector {
                 );
             }
           }
+
+          // Skip if inside parameter definition brackets or preceded by @
+          if (!insideBrackets && beforeChar !== '@') {
+            occurrences.push({
+              line: lineIndex,
+              column: match.index,
+              length: paramName.length,
+              paramName: paramName,
+              type: 'direct_param',
+              text: paramName
+            });
+          }
         }
 
         // Look for strand access patterns (e.g., 'instanceName@paramName')
@@ -178,6 +190,18 @@ class HoverDetector {
               pragma.config.name === instanceName &&
               pragma.config.strands.includes(paramName)
             );
+
+          if (matchesParameterPragma) {
+            occurrences.push({
+              line: lineIndex,
+              column: match.index,
+              length: fullMatch.length,
+              paramName: paramName,
+              type: 'strand_access',
+              text: fullMatch,
+              instanceName: instanceName
+            });
+          }
         }
       });
     });

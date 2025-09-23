@@ -1,6 +1,8 @@
 // Coordinate Probe System - Interactive spatial exploration tool
 // Shows transparent overlay with crosshairs directly on main canvas
 
+import { WebGLRenderer } from '../renderers/webgl-renderer.js';
+
 class CoordinateProbe {
   constructor(canvas, env, renderer, executor) {
     this.canvas = canvas;
@@ -246,13 +248,13 @@ class CoordinateProbe {
         const x = Math.max(0, Math.min(this.canvas.width - 1, canvasX));
         const y = Math.max(0, Math.min(this.canvas.height - 1, canvasY));
         
-        if (this.renderer && typeof WebGLRenderer !== 'undefined' && this.renderer instanceof WebGLRenderer) {
+        if (this.renderer && this.renderer instanceof WebGLRenderer) {
           // For WebGL, read from GL context
           const gl = this.renderer.gl;
           if (gl) {
             const pixels = new Uint8Array(4);
             gl.readPixels(x, this.canvas.height - y - 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-            pixelColor = `rgba(${pixels[0]}, ${pixels[1]}, ${pixels[2]}, ${(pixels[3]/255).toFixed(2)})`;
+            pixelColor = `rgba(${(pixels[0]/255).toFixed(3)}, ${(pixels[1]/255).toFixed(3)}, ${(pixels[2]/255).toFixed(3)}, ${(pixels[3]/255).toFixed(3)})`;
           }
         } else {
           // For CPU renderer, use 2D context
@@ -260,7 +262,7 @@ class CoordinateProbe {
           if (ctx) {
             const imageData = ctx.getImageData(x, y, 1, 1);
             const data = imageData.data;
-            pixelColor = `rgba(${data[0]}, ${data[1]}, ${data[2]}, ${(data[3]/255).toFixed(2)})`;
+            pixelColor = `rgba(${(data[0]/255).toFixed(3)}, ${(data[1]/255).toFixed(3)}, ${(data[2]/255).toFixed(3)}, ${(data[3]/255).toFixed(3)})`;
           }
         }
         

@@ -50,7 +50,7 @@ Weft {
   BlockStatement = LetBinding | Assignment | ForLoop
   ForLoop = kw<"for"> ident kw<"in"> sym<"("> Expr kw<"to"> Expr sym<")"> Block
 
-  OutputSpec = sym<"<"> ListOf<ident, ","> sym<">">  
+  OutputSpec = sym<"<"> ListOf<ident, ","> sym<">">
 
   BundleOrExpr = sym<"<"> ListOf<Expr, ","> sym<">">  -- bundle
                | Expr                                 -- regular
@@ -323,12 +323,12 @@ const sem = g.createSemantics().addOperation('ast', {
       const count = parseInt(countDigits.sourceString);
       const parsedArgs = args.ast();
       const outputStrands = outputs.ast();
-      
+
       // Validate output count matches repetition count
       if (outputStrands.length !== count) {
         throw new Error(`Output bundle has ${outputStrands.length} strands, expected ${count} to match repetition count`);
       }
-      
+
       // Parse arguments - identify bundles vs regular args vs thread inputs
       const argStructure = parsedArgs.map((arg, index) => {
         if (arg.type === 'Bundle') {
@@ -342,7 +342,7 @@ const sem = g.createSemantics().addOperation('ast', {
         }
         return { isRegular: true, value: arg };
       });
-      
+
       // Generate individual CallInstance nodes
       const statements = [];
       for (let i = 0; i < count; i++) {
@@ -360,7 +360,7 @@ const sem = g.createSemantics().addOperation('ast', {
             return arg.value;
           }
         });
-        
+
         statements.push({
           type: 'CallInstance',
           callee: spindleName.ast(),
@@ -369,7 +369,7 @@ const sem = g.createSemantics().addOperation('ast', {
           outs: [outputStrands[i]]
         });
       }
-      
+
       // Return a compound statement containing all expanded calls
       return {
         type: 'MultiCallExpanded',
@@ -489,7 +489,7 @@ const sem = g.createSemantics().addOperation('ast', {
 
     PrimaryExpr_call(func, _lp, args, _rp) {
       const parsedArgs = args.ast();
-      
+
       // Expand explicit bundle literals only (not bundle variables)
       const expandedArgs = [];
       for (const arg of parsedArgs) {
@@ -501,7 +501,7 @@ const sem = g.createSemantics().addOperation('ast', {
           expandedArgs.push(arg);
         }
       }
-      
+
       return { type: 'Call', name: func.ast(), args: expandedArgs };
     },
 
@@ -550,7 +550,7 @@ const sem = g.createSemantics().addOperation('ast', {
 function transformAST(ast) {
   // Track which variables are bundles
   const bundleInfo = new Map();
-  
+
   // First pass: collect bundle assignments
   const transformedStatements = [];
   for (const stmt of ast.statements) {
@@ -559,10 +559,10 @@ function transformAST(ast) {
       if (stmt.expr.items.length !== stmt.outs.length) {
         throw new Error(`Bundle assignment has ${stmt.expr.items.length} values, expected ${stmt.outs.length} to match output strands`);
       }
-      
+
       // Record this as a bundle
       bundleInfo.set(stmt.name, stmt.outs);
-      
+
       // Expand into individual assignments
       for (let i = 0; i < stmt.outs.length; i++) {
         transformedStatements.push({
@@ -593,7 +593,7 @@ function transformAST(ast) {
           expandedArgs.push(arg);
         }
       }
-      
+
       transformedStatements.push({
         ...stmt,
         args: expandedArgs
@@ -602,7 +602,7 @@ function transformAST(ast) {
       transformedStatements.push(stmt);
     }
   }
-  
+
   return new Program(transformedStatements);
 }
 
@@ -627,7 +627,6 @@ class Parser {
 
 export { Parser };
 
-// Temporary bridge - also expose to global scope
 if (typeof window !== 'undefined') {
   window.Parser = Parser;
 }
