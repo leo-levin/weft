@@ -11,6 +11,10 @@ import { ClockDisplay } from './clock-display.js';
 
 console.log('✅ Starting WEFT application...');
 
+// Enable debug logging for audio debugging
+logger.setFilters({ debug: true, info: true, warn: true, error: true });
+console.log('🔧 Debug logging enabled');
+
 const editor = document.getElementById('editor');
 // Ensure editor text is visible with white color, default background
 if (editor) {
@@ -142,6 +146,26 @@ function initializeRenderer() {
   if (!audioRenderer) {
     audioRenderer = new AudioWorkletRenderer(env);
     console.log('🎵 Audio renderer initialized');
+
+    // Add click handler to resume AudioContext on user interaction
+    const resumeAudioContext = async () => {
+      if (audioRenderer && audioRenderer.audioContext && audioRenderer.audioContext.state === 'suspended') {
+        try {
+          await audioRenderer.audioContext.resume();
+
+          // Update parameters again now that context is running
+          if (audioRenderer.updateCrossContextParams) {
+            audioRenderer.updateCrossContextParams();
+          }
+        } catch (error) {
+          console.error('Failed to resume AudioContext:', error);
+        }
+      }
+    };
+
+    // Add event listeners for user interaction
+    document.addEventListener('click', resumeAudioContext, { once: true });
+    document.addEventListener('keydown', resumeAudioContext, { once: true });
   }
   
   // Initialize widget manager after renderer is ready

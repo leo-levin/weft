@@ -1,3 +1,0 @@
-// Constant test tone - should always work
-play(audio: 0.2)
-display(0.5, 0.5, 0)

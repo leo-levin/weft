@@ -1,457 +1,637 @@
-# WEFT Routing System Implementation Tasks
+# WEFT Coordinate Remapping Implementation Tasks
 
-## 1. AST Route Tagging System
+## Overview
+Enable domain transformation by allowing strands to be remapped with custom coordinates, creating new instances with different input domains. This enables media-agnostic programming where any function can be evaluated in any coordinate space.
 
-**1.1. Extend AST Node Structure**
+## Syntax Goal
+```weft
+load("img.png") :: img<r,g,b,w,h>
+
+// Create new instances with remapped coordinates
+swapped<r> = img@r(me@y, me@x)  // Swap x and y coordinates
+scanline<audio> = img@r(me@sample % img@w, floor(me@sample / img@w))  // 2D to 1D mapping
+
+play (scanline@audio)
+display (swapped@r,0,0)
+```
+
+## 1. Parser Extensions
+
+**1.1. Add Coordinate Remapping Syntax**
 ```javascript
-// In parser.js, modify AST node creation:
-class ASTNode {
-  constructor(type, value) {
-    this.type = type;
-    this.value = value;
-    this.routes = new Set();        // NEW: execution routes
-    this.primaryRoute = null;       // NEW: primary execution route  
-    this.dependencies = new Set();  // NEW: expression dependencies
-    this.crossContext = false;      // NEW: cross-context flag
+// In parser.js grammar, extend PrimaryExpr:
+PrimaryExpr = ...
+            | ident sym<"@"> ident sym<"("> ListOf<Expr, ","> sym<")">  -- strandRemap
+
+// Semantic action:
+PrimaryExpr_strandRemap(base, _at, strand, _lp, coords, _rp) {
+  return {
+    type: 'StrandRemap',
+    base: base.ast(),
+    strand: strand.ast(),
+    coordinates: coords.ast()
+  };
+}
+```
+
+**1.2. Update AST Node Types**
+```javascript
+// Add to ast-node.js:
+class StrandRemapExpr extends ASTNode {
+  constructor(base, strand, coordinates) {
+    super('StrandRemap');
+    this.base = base;           // Instance name (e.g., 'img')
+    this.strand = strand;       // Strand name (e.g., 'r')
+    this.coordinates = coordinates;  // Array of coordinate expressions
   }
 }
 ```
 
-**1.2. Create Route Determination Logic**
+**1.3. Allow StrandRemap in Direct Assignments**
 ```javascript
-// NEW FILE: src/routing/route-analyzer.js
-function determineRoute(displayParams) {
-  if (displayParams.width || displayParams.height || displayParams.fps) return 'gpu';
-  if (displayParams.audio || displayParams.rate || displayParams.channels) return 'audio';  
-  if (displayParams.target === 'console') return 'cpu';
-  return 'cpu'; // default
+// Update grammar to allow coordinate remapping in direct assignments:
+InstanceBinding = ident space* OutputSpec space* sym<"="> space* Expr  -- direct
+                | StrandRemapExpr sym<"::"> ident OutputSpec           -- remap
+```
+
+## 2. Runtime Extensions
+
+**2.1. Modify load() Builtin for Metadata**
+✅ **COMPLETED** - Added width, height, duration metadata strands
+
+**2.2. Create StrandRemap Evaluation**
+```javascript
+// In runtime.js, add handler for StrandRemap expressions:
+function evalStrandRemap(node, me, env) {
+  // 1. Get the source strand function
+  const baseInstance = env.instances.get(node.base.name);
+  const sourceStrand = baseInstance.outs[node.strand];
+
+  // 2. Evaluate coordinate expressions
+  const coords = node.coordinates.map(coordExpr =>
+    evalExpr(coordExpr, me, env)
+  );
+
+  // 3. Create new evaluation context with remapped coordinates
+  const remappedMe = {
+    ...me,
+    x: coords[0] || me.x,
+    y: coords[1] || me.y,
+    z: coords[2] || me.z
+  };
+
+  // 4. Evaluate source strand with new coordinates
+  return sourceStrand.evalAt(remappedMe, env);
 }
 ```
 
-**1.3. Build Dependency Graph**
+**2.3. Support StrandRemap in Instance Creation**
 ```javascript
-// In route-analyzer.js
-function buildDependencyGraph(ast) {
-  const graph = new Map();
-  
-  function traverse(node, parent = null) {
-    if (parent) {
-      if (!graph.has(parent)) graph.set(parent, new Set());
-      graph.get(parent).add(node);
-      node.dependencies.add(parent);
-    }
-    
-    if (node.children) {
-      node.children.forEach(child => traverse(child, node));
-    }
-  }
-  
-  traverse(ast);
-  return graph;
-}
-```
+// In runtime.js, handle StrandRemap in direct assignments:
+function createRemappedInstance(remapExpr, instanceName, outputs, env) {
+  const instanceOuts = {};
 
-**1.4. Implement Route Propagation**
-```javascript
-// In route-analyzer.js
-function tagExpressionRoutes(ast) {
-  // 1. Find display statements
-  const displays = findNodes(ast, 'DisplayStmt');
-  
-  // 2. Tag display expressions with routes
-  displays.forEach(display => {
-    const route = determineRoute(display.parameters);
-    propagateRoute(display.expressions, route);
+  outputs.forEach(outName => {
+    instanceOuts[outName] = {
+      kind: 'strand',
+      evalAt: (me, env) => evalStrandRemap(remapExpr, me, env)
+    };
   });
-  
-  // 3. Identify cross-context expressions
-  markCrossContextExpressions(ast);
+
+  const inst = makeSimpleInstance(instanceName, instanceOuts);
+  env.instances.set(instanceName, inst);
+  return inst;
+}
+```
+
+## 3. Audio Renderer Integration
+
+**3.1. Compile StrandRemap in Audio Worklet**
+```javascript
+// In audio-worklet-renderer.js, add compilation for StrandRemap:
+compileToJS(expr) {
+  // ... existing cases ...
+
+  case 'StrandRemap':
+    return this.compileStrandRemap(expr);
 }
 
-function propagateRoute(expressions, route) {
-  expressions.forEach(expr => {
-    expr.routes.add(route);
-    if (expr.dependencies) {
-      propagateRoute(Array.from(expr.dependencies), route);
+compileStrandRemap(expr) {
+  // 1. Get source instance info
+  const baseKey = `${expr.base.name}@${expr.strand}`;
+  const sourceVar = this.instanceOutputs[baseKey];
+
+  if (!sourceVar) {
+    return '0.0'; // Fallback if source not found
+  }
+
+  // 2. Compile coordinate expressions
+  const coords = expr.coordinates.map(coord => this.compileToJS(coord));
+
+  // 3. Generate coordinate override code
+  return `(() => {
+    const originalMe = me;
+    const remappedMe = {
+      ...me,
+      x: ${coords[0] || 'me.x'},
+      y: ${coords[1] || 'me.y'}
+    };
+    me = remappedMe;
+    const result = this.${sourceVar}; // Evaluate with remapped coordinates
+    me = originalMe;
+    return result;
+  })()`;
+}
+```
+
+**3.2. Handle Cross-Context Remapping**
+```javascript
+// Ensure remapped instances are available across contexts
+collectCrossContextParams(ast) {
+  // ... existing logic ...
+
+  // Find StrandRemap expressions used across contexts
+  const remapExprs = findNodes(ast, 'StrandRemap');
+  remapExprs.forEach(remap => {
+    if (this.isUsedInAudio(remap) && !this.hasAudioRoute(remap)) {
+      this.crossContextParams.push({
+        name: remap.generatedName,
+        type: 'remap',
+        expression: remap
+      });
     }
   });
 }
 ```
 
-## 2. Route Executor Interface
+## 4. WebGL Renderer Integration
 
-**2.1. Create Base Route Executor**
+**4.1. Compile StrandRemap to GLSL**
 ```javascript
-// NEW FILE: src/routing/executors/base-executor.js
-class RouteExecutor {
-  constructor(type) {
-    this.type = type;
-    this.frequency = null;
-    this.inputs = new Map();
-    this.outputs = new Map();
-  }
-  
-  // Abstract methods - must implement in subclasses
-  compile(expressions) { throw new Error('Must implement compile()'); }
-  execute(currentTime) { throw new Error('Must implement execute()'); }
-  updateInputs(inputs) { throw new Error('Must implement updateInputs()'); }
-  getRequiredSamples() { throw new Error('Must implement getRequiredSamples()'); }
+// In webgl-renderer.js, add GLSL generation for StrandRemap:
+compileStrandRemap(stmt, glslCode, instanceOutputs) {
+  const baseKey = `${stmt.base.name}@${stmt.strand}`;
+  const sourceVar = instanceOutputs[baseKey];
+
+  if (!sourceVar) return;
+
+  // Generate coordinate expressions in GLSL
+  const coords = stmt.coordinates.map(coord => this.compileToGLSL(coord));
+
+  // Generate remapped sampling
+  stmt.outs.forEach(outName => {
+    const varName = `${stmt.inst}_${outName}`;
+    glslCode.push(`
+      vec2 remappedCoords = vec2(${coords[0] || 'uv.x'}, ${coords[1] || 'uv.y'});
+      float ${varName} = texture2D(${sourceVar.texture}, remappedCoords).r;
+    `);
+    instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+  });
 }
 ```
 
-**2.2. Extract GPU Route Executor**
-```javascript  
-// NEW FILE: src/routing/executors/gpu-executor.js
-class GPURouteExecutor extends RouteExecutor {
-  constructor(gl) {
-    super('gpu');
-    this.gl = gl;
-    this.frequency = 60; // fps
-    this.shader = null;
-    this.uniforms = new Map();
-  }
-  
-  compile(expressions) {
-    // Move GLSL generation logic from webgl-renderer.js here
-    const glslCode = this.generateGLSL(expressions);
-    this.shader = this.compileShader(glslCode);
-  }
-  
-  execute(currentTime) {
-    // Move rendering logic from webgl-renderer.js here  
-    this.updateUniforms(currentTime);
-    this.renderFrame();
-    return this.outputs;
-  }
-  
-  generateGLSL(expressions) {
-    // Extract from existing webgl-renderer.js
-    // Convert WEFT expressions to GLSL fragment shader code
-  }
-}
+## 5. CPU Renderer Integration
+
+**5.1. Support Remapping in Direct Evaluation**
+```javascript
+// CPU renderer already uses runtime evaluation, so StrandRemap
+// support comes automatically through runtime.js changes
 ```
 
-**2.3. Extract CPU Route Executor**
-```javascript
-// NEW FILE: src/routing/executors/cpu-executor.js  
-class CPURouteExecutor extends RouteExecutor {
-  constructor() {
-    super('cpu');
-    this.frequency = 'event'; // event-driven
-    this.environment = new Environment();
-  }
-  
-  compile(expressions) {
-    // No compilation needed - direct AST interpretation
-    this.expressions = expressions;
-  }
-  
-  execute(currentTime) {
-    // Move evaluation logic from runtime.js here
-    const results = new Map();
-    
-    this.expressions.forEach(expr => {
-      const value = this.evaluateExpression(expr, this.environment);
-      results.set(expr.id, value);
-    });
-    
-    return results;
-  }
-  
-  evaluateExpression(expr, env) {
-    // Extract from existing runtime.js
-  }
-}
+## 6. Testing Implementation
+
+**6.1. Basic Coordinate Remapping Test**
+```weft
+// Test coordinate swapping
+load("test.png") :: img<r,g,b,w,h>
+swapped<r> = img@r(me@y, me@x)
+display (swapped@r,0,0)
 ```
 
-## 3. Execution Coordinator
-
-**3.1. Create Coordinator Class**
-```javascript
-// NEW FILE: src/routing/coordinator.js
-class ExecutionCoordinator {
-  constructor() {
-    this.routes = new Map();           // route_type → RouteExecutor
-    this.dependencies = new Map();     // dependency graph
-    this.dataBridges = new Map();      // cross-context data flow
-    this.lastExecutionTime = 0;
-  }
-  
-  addRoute(type, executor) {
-    this.routes.set(type, executor);
-  }
-  
-  compile(ast) {
-    // 1. Tag routes
-    tagExpressionRoutes(ast);
-    
-    // 2. Group expressions by route
-    const routeExpressions = this.groupExpressionsByRoute(ast);
-    
-    // 3. Compile each route
-    routeExpressions.forEach((expressions, routeType) => {
-      const executor = this.routes.get(routeType);
-      executor.compile(expressions);
-    });
-    
-    // 4. Create data bridges for cross-context expressions
-    this.createDataBridges(ast);
-  }
-  
-  execute() {
-    const currentTime = performance.now();
-    
-    // Execute routes in dependency order
-    const executionOrder = this.calculateExecutionOrder();
-    
-    executionOrder.forEach(routeType => {
-      const executor = this.routes.get(routeType);
-      const outputs = executor.execute(currentTime);
-      this.updateDataBridges(routeType, outputs, currentTime);
-    });
-  }
-}
+**6.2. Audio Scanline Test**
+```weft
+// Test image-to-audio conversion
+load("test.png") :: img<r,g,b,w,h>
+scanline<audio> = img@r(me@sample % img@w, floor(me@sample / img@w))
+play(scanline@audio)
 ```
 
-**3.2. Add Route Grouping Logic**
-```javascript
-// In coordinator.js
-groupExpressionsByRoute(ast) {
-  const routeGroups = new Map();
-  
-  function traverse(node) {
-    if (node.routes && node.routes.size > 0) {
-      // Single route expression
-      if (node.routes.size === 1) {
-        const route = Array.from(node.routes)[0];
-        if (!routeGroups.has(route)) routeGroups.set(route, []);
-        routeGroups.get(route).push(node);
-      }
-      // Cross-context expression - goes to primary route
-      else {
-        const primaryRoute = node.primaryRoute;
-        if (!routeGroups.has(primaryRoute)) routeGroups.set(primaryRoute, []);
-        routeGroups.get(primaryRoute).push(node);
-      }
-    }
-    
-    if (node.children) {
-      node.children.forEach(child => traverse(child));
-    }
-  }
-  
-  traverse(ast);
-  return routeGroups;
-}
+**6.3. Cross-Context Test**
+```weft
+// Test same remapping used in both contexts
+load("test.png") :: img<r,g,b,w,h>
+rotated<r> = img@r(cos(me@time) * me@x - sin(me@time) * me@y,
+                   sin(me@time) * me@x + cos(me@time) * me@y)
+display (rotated@radian,0,0)
+play(rotated@r)  // Same rotation applied to audio
 ```
 
-## 4. Audio Route Implementation  
+## Implementation Priority
 
-**4.1. Create Audio Route Executor**
+1. **Parser extensions** - Add StrandRemap syntax and AST nodes
+2. **Runtime support** - Handle StrandRemap evaluation and instance creation
+3. **Audio renderer** - Compile coordinate remapping to JavaScript
+4. **WebGL renderer** - Compile coordinate remapping to GLSL
+5. **Integration testing** - Verify cross-context functionality
+
+This enables WEFT's media-agnostic vision where any function can be evaluated in any coordinate space, opening up creative possibilities like image sonification, audio visualization, and domain-specific coordinate transformations.
+
+---
+
+# Audio Renderer Enhancement Tasks
+
+## Overview
+Bring the audio renderer to full parity with the visual renderer by implementing universal media loading, improved compilation, and cross-media integration. Focus on making the audio system as robust and functional as the WebGL renderer.
+
+## 7. Universal Media Loading for Audio
+
+**7.1. Extend Audio Renderer to Access All Media Types**
 ```javascript
-// NEW FILE: src/routing/executors/audio-executor.js
-class AudioRouteExecutor extends RouteExecutor {
-  constructor(audioContext) {
-    super('audio');
-    this.audioContext = audioContext;
-    this.frequency = 44100; // sample rate
-    this.workletNode = null;
-    this.parameters = new Map();
-  }
-  
-  async compile(expressions) {
-    // Generate Audio Worklet processor JavaScript
-    const processorCode = this.generateWorkletProcessor(expressions);
-    
-    // Create worklet
-    const blob = new Blob([processorCode], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    
-    await this.audioContext.audioWorklet.addModule(url);
-    this.workletNode = new AudioWorkletNode(this.audioContext, 'weft-processor');
-  }
-  
-  generateWorkletProcessor(expressions) {
-    // Convert WEFT expressions to JavaScript audio processing code
-    return `
-      class WeftProcessor extends AudioWorkletProcessor {
-        process(inputs, outputs, parameters) {
-          const output = outputs[0];
-          const blockSize = output[0].length;
-          
-          for (let i = 0; i < blockSize; i++) {
-            // Generated WEFT audio expression code here
-            const sample = ${this.expressionToJS(expressions[0])};
-            output[0][i] = sample;
-          }
-          
-          return true;
+// In audio-worklet-renderer.js, add universal media access:
+async processAllLoadStatements(statements) {
+  for (const stmt of statements) {
+    if (stmt.type === 'CallInstance' && stmt.callee === 'load') {
+      const mediaPath = stmt.args[0]?.v;
+      if (mediaPath) {
+        // Get the shared Sampler instance from environment
+        const sampler = this.env.instances.get(stmt.inst)?.sampler;
+        if (sampler) {
+          await this.createMediaAccessors(sampler, stmt.inst, stmt.outs);
         }
       }
-      registerProcessor('weft-processor', WeftProcessor);
-    `;
+    }
+  }
+}
+
+async createMediaAccessors(sampler, instName, outputs) {
+  for (const output of outputs) {
+    const outName = output.alias || output;
+    const varName = `${instName}_${outName}`;
+
+    // Create accessor based on media type and output name
+    if (sampler.kind === 'image' || sampler.kind === 'video') {
+      this.generateImageAudioAccess(varName, instName, outName, sampler);
+    } else if (sampler.kind === 'audio') {
+      this.generateAudioAccess(varName, instName, outName, sampler);
+    }
+
+    this.instanceOutputs[`${instName}@${outName}`] = varName;
   }
 }
 ```
 
-## 5. Data Bridges Implementation
-
-**5.1. Create Data Bridge Class**
+**7.2. Add Image/Video Sampling for Audio**
 ```javascript
-// NEW FILE: src/routing/data-bridges.js
-class DataBridge {
-  constructor(sourceRoute, targetRoute, dataType) {
-    this.source = sourceRoute;
-    this.target = targetRoute;
-    this.dataType = dataType;      // 'scalar', 'array', 'texture'
-    this.buffer = new Float32Array(1024);
-    this.writeIndex = 0;
-    this.readIndex = 0;
-    this.lastValue = 0;
-    this.interpolation = 'hold';   // 'hold', 'linear'
+// Generate methods for sampling visual media as audio
+generateImageAudioAccess(varName, instName, outName, sampler) {
+  const sampleMethod = this.createImageSampler(instName, sampler);
+
+  // Map output names to image channels or metadata
+  if (outName === 'r' || outName === 'red') {
+    this.jsCode.push(`this.${varName} = (x, y) => ${sampleMethod}(x, y, 0);`);
+  } else if (outName === 'g' || outName === 'green') {
+    this.jsCode.push(`this.${varName} = (x, y) => ${sampleMethod}(x, y, 1);`);
+  } else if (outName === 'b' || outName === 'blue') {
+    this.jsCode.push(`this.${varName} = (x, y) => ${sampleMethod}(x, y, 2);`);
+  } else if (outName === 'w' || outName === 'width') {
+    this.jsCode.push(`this.${varName} = ${sampler.width || 0};`);
+  } else if (outName === 'h' || outName === 'height') {
+    this.jsCode.push(`this.${varName} = ${sampler.height || 0};`);
   }
-  
-  write(value, timestamp) {
-    this.buffer[this.writeIndex % this.buffer.length] = value;
-    this.writeIndex++;
-    this.lastValue = value;
-  }
-  
-  read(numSamples, targetFrequency) {
-    if (this.interpolation === 'hold') {
-      return new Array(numSamples).fill(this.lastValue);
-    }
-    
-    // Linear interpolation for frequency conversion
-    const output = new Float32Array(numSamples);
-    const ratio = this.getFrequencyRatio(targetFrequency);
-    
-    for (let i = 0; i < numSamples; i++) {
-      const sourceIndex = this.readIndex + (i * ratio);
-      const lowerIndex = Math.floor(sourceIndex);
-      const upperIndex = Math.ceil(sourceIndex);
-      const fraction = sourceIndex - lowerIndex;
-      
-      const lowerSample = this.buffer[lowerIndex % this.buffer.length];
-      const upperSample = this.buffer[upperIndex % this.buffer.length];
-      
-      output[i] = lowerSample * (1 - fraction) + upperSample * fraction;
-    }
-    
-    this.readIndex += numSamples * ratio;
-    return output;
-  }
+}
+
+createImageSampler(instName, sampler) {
+  const samplerData = this.copyImageDataToWorklet(sampler);
+  return `this.sampleImage_${instName}`;
 }
 ```
 
-**5.2. Integrate Bridges into Coordinator**
+## 8. Audio Worklet Data Transfer
+
+**8.1. Copy Visual Media to Audio Worklet**
 ```javascript
-// Add to coordinator.js
-createDataBridges(ast) {
-  const crossContextExprs = findCrossContextExpressions(ast);
-  
-  crossContextExprs.forEach(expr => {
-    const primaryRoute = expr.primaryRoute;
-    
-    expr.routes.forEach(targetRoute => {
-      if (targetRoute !== primaryRoute) {
-        const bridgeKey = `${expr.id}_${primaryRoute}_${targetRoute}`;
-        const bridge = new DataBridge(primaryRoute, targetRoute, 'scalar');
-        this.dataBridges.set(bridgeKey, bridge);
-      }
-    });
+// Transfer image/video data to audio worklet for sampling
+copyImageDataToWorklet(sampler) {
+  if (!sampler.ready || !sampler.pixels) return null;
+
+  // Convert ImageData to transferable arrays
+  const width = sampler.width;
+  const height = sampler.height;
+  const pixels = Array.from(sampler.pixels); // RGBA data
+
+  // Store in worklet-accessible format
+  const dataId = `imageData_${this.mediaCounter++}`;
+
+  this.jsCode.push(`
+    this.${dataId} = {
+      width: ${width},
+      height: ${height},
+      data: [${pixels.join(',')}]
+    };
+  `);
+
+  return dataId;
+}
+```
+
+**8.2. Add Sampling Methods to Worklet**
+```javascript
+// Generate image sampling methods in audio worklet
+generateImageSamplingMethods() {
+  return `
+    // Sample image data with coordinate wrapping/clamping
+    this.sampleImageData = function(imageData, x, y, channel = 0) {
+      if (!imageData || !imageData.data) return 0.0;
+
+      // Normalize coordinates to [0,1] range
+      x = Math.max(0, Math.min(1, x));
+      y = Math.max(0, Math.min(1, y));
+
+      // Convert to pixel coordinates
+      const px = Math.floor(x * (imageData.width - 1));
+      const py = Math.floor(y * (imageData.height - 1));
+      const index = (py * imageData.width + px) * 4 + channel;
+
+      // Return normalized value [0,1]
+      return (imageData.data[index] || 0) / 255.0;
+    };
+
+    // 1D sampling for audio (flatten 2D image to 1D)
+    this.sampleImageAs1D = function(imageData, sample, channel = 0) {
+      if (!imageData || !imageData.data) return 0.0;
+
+      const totalPixels = imageData.width * imageData.height;
+      const pixelIndex = Math.floor(sample * totalPixels) % totalPixels;
+      const dataIndex = pixelIndex * 4 + channel;
+
+      return (imageData.data[dataIndex] || 0) / 255.0;
+    };
+  `;
+}
+```
+
+## 9. Improved Audio Compilation Pipeline
+
+**9.1. Create Unified Compilation Architecture**
+```javascript
+// Make audio compilation match WebGL renderer structure
+async compile(playStatements) {
+  // 1. Reset compilation state
+  this.resetCompilationState();
+
+  // 2. Process all media loading (not just audio files)
+  await this.processAllLoadStatements(this.env.currentProgram.statements);
+
+  // 3. Build instance graph like WebGL renderer
+  this.buildInstanceGraph(this.env.currentProgram);
+
+  // 4. Compile expressions to optimized JavaScript
+  this.compileExpressionsToJS(playStatements);
+
+  // 5. Generate and deploy audio worklet
+  await this.generateAndDeployWorklet();
+
+  // 6. Setup parameter synchronization
+  this.setupParameterSync();
+}
+
+resetCompilationState() {
+  this.instanceOutputs = {};
+  this.crossContextParams = [];
+  this.jsCode = [];
+  this.mediaData = new Map();
+  this.compiledExpressions = new Map();
+}
+```
+
+**9.2. Add Expression Caching and Optimization**
+```javascript
+// Cache compiled expressions for performance
+compileExpressionsToJS(playStatements) {
+  this.compiledExpressions.clear();
+
+  playStatements.forEach(stmt => {
+    const leftExpr = this.extractAudioExpression(stmt, 'left');
+    const rightExpr = this.extractAudioExpression(stmt, 'right');
+
+    if (leftExpr) {
+      this.compiledExpressions.set('left', this.compileOptimized(leftExpr));
+    }
+    if (rightExpr) {
+      this.compiledExpressions.set('right', this.compileOptimized(rightExpr));
+    }
   });
 }
 
-updateDataBridges(sourceRoute, outputs, currentTime) {
-  outputs.forEach((value, expressionId) => {
-    // Find bridges where this expression is the source
-    this.dataBridges.forEach((bridge, bridgeKey) => {
-      if (bridgeKey.startsWith(`${expressionId}_${sourceRoute}`)) {
-        bridge.write(value, currentTime);
-      }
-    });
-  });
+compileOptimized(expr) {
+  // Add expression optimization passes
+  const optimized = this.optimizeExpression(expr);
+  return this.compileToJS(optimized);
+}
+
+optimizeExpression(expr) {
+  // Constant folding, common subexpression elimination, etc.
+  if (expr.type === 'Bin' && expr.left.type === 'Num' && expr.right.type === 'Num') {
+    return { type: 'Num', v: this.evaluateConstant(expr) };
+  }
+  return expr;
 }
 ```
 
-## 6. Integration with Main System
+## 10. Cross-Media Parameter Synchronization
 
-**6.1. Modify main.js**
+**10.1. Improve Parameter Updates**
 ```javascript
-// In main.js, replace existing renderer calls:
-const coordinator = new ExecutionCoordinator();
+// More efficient parameter synchronization
+updateCrossContextParams() {
+  if (!this.workletNode?.port) return;
 
-// Add route executors
-coordinator.addRoute('gpu', new GPURouteExecutor(gl));
-coordinator.addRoute('cpu', new CPURouteExecutor());
-coordinator.addRoute('audio', new AudioRouteExecutor(audioContext));
+  const paramUpdates = {};
+  let hasUpdates = false;
 
-// On code change:
-function onCodeChange(weftCode) {
-  try {
-    const ast = parser.parse(weftCode);
-    coordinator.compile(ast);
-    
-    // Start execution loop
-    function tick() {
-      coordinator.execute();
-      requestAnimationFrame(tick);
+  this.crossContextParams.forEach(param => {
+    try {
+      const newValue = this.evaluateParameter(param);
+      const key = this.getParameterKey(param);
+
+      // Only update if value changed
+      if (this.lastParamValues[key] !== newValue) {
+        paramUpdates[key] = newValue;
+        this.lastParamValues[key] = newValue;
+        hasUpdates = true;
+      }
+    } catch (error) {
+      this.warn('Failed to evaluate parameter:', param.name, error);
     }
-    tick();
-  } catch (error) {
-    handleError(error);
+  });
+
+  if (hasUpdates) {
+    this.workletNode.port.postMessage({
+      type: 'updateCrossContext',
+      params: paramUpdates,
+      timestamp: performance.now()
+    });
+  }
+}
+
+// Initialize parameter tracking
+constructor(env) {
+  // ... existing constructor ...
+  this.lastParamValues = {};
+  this.paramUpdateInterval = 16; // ~60fps parameter updates
+}
+```
+
+## 11. Audio Buffer Management and Memory
+
+**11.1. Add Audio Buffer Pooling**
+```javascript
+// Efficient memory management for audio buffers
+class AudioBufferPool {
+  constructor() {
+    this.buffers = new Map();
+    this.maxBuffers = 32;
+    this.bufferSizes = [1024, 2048, 4096, 8192, 16384];
+  }
+
+  getBuffer(size, channels = 2) {
+    const key = `${size}_${channels}`;
+    if (!this.buffers.has(key)) {
+      this.buffers.set(key, []);
+    }
+
+    const pool = this.buffers.get(key);
+    if (pool.length > 0) {
+      return pool.pop();
+    }
+
+    // Create new buffer if pool empty
+    return new Float32Array(size * channels);
+  }
+
+  releaseBuffer(buffer, size, channels = 2) {
+    const key = `${size}_${channels}`;
+    const pool = this.buffers.get(key) || [];
+
+    if (pool.length < this.maxBuffers) {
+      buffer.fill(0); // Clear buffer
+      pool.push(buffer);
+    }
   }
 }
 ```
 
-**6.2. Update Parser Integration**  
+**11.2. Optimize Worklet Memory Usage**
 ```javascript
-// Modify parser.js to preserve dependency information
-// Add dependency tracking to semantic actions
-// Ensure AST nodes have proper structure for route tagging
+// Reduce memory allocation in audio worklet
+generateProcessorCode(playStmt) {
+  return `
+    class WEFTAudioProcessor extends AudioWorkletProcessor {
+      constructor() {
+        super();
+
+        // Pre-allocate working buffers
+        this.workingBuffer = new Float32Array(128);
+        this.tempValues = new Float32Array(16);
+
+        // Initialize all data structures
+        ${this.generateInitialization()}
+      }
+
+      process(inputs, outputs, parameters) {
+        const output = outputs[0];
+        const blockSize = output[0].length;
+
+        // Reuse pre-allocated buffer instead of creating new arrays
+        for (let i = 0; i < blockSize; i++) {
+          const me = this.calculateMeValues(i);
+          const leftSample = ${this.compiledExpressions.get('left') || '0.0'};
+          const rightSample = ${this.compiledExpressions.get('right') || leftSample};
+
+          output[0][i] = this.clampSample(leftSample);
+          if (output[1]) output[1][i] = this.clampSample(rightSample);
+        }
+
+        return true;
+      }
+
+      clampSample(sample) {
+        return Math.max(-1, Math.min(1, isFinite(sample) ? sample : 0));
+      }
+    }
+  `;
+}
 ```
 
-## 7. Testing Implementation
+## 12. Enhanced DSP and Effects
 
-**7.1. Create Route Tagging Tests**
+**12.1. Add More Audio Processing Functions**
 ```javascript
-// NEW FILE: tests/route-tagging.test.js
-test('GPU route detection', () => {
-  const ast = parser.parse(`
-    pattern = sin(me.x * 10)
-    display(rgb: pattern, width: 800, height: 600)
-  `);
-  
-  tagExpressionRoutes(ast);
-  
-  const patternNode = findNode(ast, 'pattern');
-  expect(patternNode.routes).toContain('gpu');
-  expect(patternNode.primaryRoute).toBe('gpu');
-});
+// Extend audio function library in worklet
+generateAdvancedDSPMethods() {
+  return `
+    // State-variable filter (more stable than one-pole)
+    this.svfFilter = function(signal, cutoff, resonance, type = 'lowpass') {
+      const filterId = 'svf_' + Math.floor(cutoff) + '_' + type;
+      if (!this.filterState[filterId]) {
+        this.filterState[filterId] = { low: 0, high: 0, band: 0, notch: 0 };
+      }
+
+      const state = this.filterState[filterId];
+      const f = 2.0 * Math.sin(Math.PI * Math.min(0.25, cutoff / sampleRate));
+      const q = Math.max(0.5, resonance);
+      const qres = 1.0 / q;
+
+      state.low += f * state.band;
+      state.high = signal - state.low - qres * state.band;
+      state.band += f * state.high;
+      state.notch = state.high + state.low;
+
+      switch(type) {
+        case 'lowpass': return state.low;
+        case 'highpass': return state.high;
+        case 'bandpass': return state.band;
+        case 'notch': return state.notch;
+        default: return state.low;
+      }
+    };
+
+    // Multi-tap delay with feedback
+    this.multiDelay = function(signal, delayTimes, feedbacks, mix = 0.5) {
+      let output = signal;
+
+      for (let i = 0; i < delayTimes.length; i++) {
+        const delayed = this.delayLine(signal, delayTimes[i], feedbacks[i] || 0.0);
+        output += delayed * mix / delayTimes.length;
+      }
+
+      return output;
+    };
+
+    // Granular synthesis
+    this.granularSample = function(buffer, position, grainSize, overlap = 0.5) {
+      // Implementation for granular sampling of loaded audio/image data
+      if (!buffer || !buffer.data) return 0.0;
+
+      const grainSamples = Math.floor(grainSize * sampleRate);
+      const hopSize = Math.floor(grainSamples * (1.0 - overlap));
+
+      // Simplified granular synthesis
+      const index = Math.floor(position * buffer.data.length) % buffer.data.length;
+      return buffer.data[index] || 0.0;
+    };
+  `;
+}
 ```
 
-**7.2. Create Cross-Context Tests**
-```javascript
-// NEW FILE: tests/cross-context.test.js  
-test('Mouse controls visual and audio', () => {
-  const ast = parser.parse(`
-    freq = mouse@x * 440
-    visual = sin(me.x * freq)
-    audio_tone = sin(me.time * freq * 2 * pi)
-    display(rgb: visual, fps: 60)
-    display(audio: audio_tone, rate: 44100)
-  `);
-  
-  const coordinator = setupCoordinator();
-  coordinator.compile(ast);
-  
-  // Test that freq expression is cross-context
-  const freqNode = findNode(ast, 'freq');
-  expect(freqNode.crossContext).toBe(true);
-  expect(freqNode.routes).toContain('gpu');
-  expect(freqNode.routes).toContain('audio');
-});
-```
+## Implementation Priority for Audio Enhancement
 
-This implementation order ensures each component builds on the previous ones, with clear dependencies and testable milestones.
+1. **Universal media loading** - Make `load()` work for all media types in audio context
+2. **Worklet data transfer** - Copy image/video data to audio worklet for sampling
+3. **Improved compilation** - Match WebGL renderer's compilation architecture
+4. **Memory optimization** - Add buffer pooling and reduce allocations
+5. **Enhanced DSP** - Add more audio processing functions
+6. **Parameter sync** - Optimize cross-context parameter updates
+7. **Testing** - Verify media-agnostic functionality works correctly
+
+This brings the audio renderer to full parity with the visual renderer while maintaining WEFT's function-based, media-agnostic philosophy.

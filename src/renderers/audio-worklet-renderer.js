@@ -1,15 +1,3 @@
-/**
- * Audio Worklet Renderer for WEFT
- *
- * Compiles WEFT expressions tagged for the 'audio' route into JavaScript
- * code that runs in an AudioWorkletProcessor for low-latency audio synthesis.
- *
- * Features:
- * - Route-aware compilation (only processes audio-tagged expressions)
- * - Cross-context parameter passing from other routes
- * - Real-time audio synthesis with sample-accurate timing
- * - Support for stereo and mono audio output
- */
 import { clamp, isNum, logger } from '../runtime/runtime.js';
 
 class AudioWorkletRenderer {
@@ -22,17 +10,15 @@ class AudioWorkletRenderer {
     this.currentSourceCode = '';
     this.processorCount = 0;
 
-    // Audio-specific compilation state
     this.audioStatements = [];      // Only statements tagged for audio route
     this.instanceOutputs = {};
     this.crossContextParams = [];
     this.jsCode = [];
+    this.processExpressions = new Map();  // Expressions to evaluate in process loop
 
-    // Audio buffer management (similar to WebGL texture management)
     this.audioBuffers = new Map();  // Maps instance name → audio buffer info
     this.audioCounter = 0;          // Counter for unique buffer identifiers
 
-    // Timing synchronization with main thread
     this.timingParams = {
       startTime: Date.now(),        // Will be updated from main thread
       currentFrame: 0,              // Current visual frame from main thread
@@ -42,13 +28,12 @@ class AudioWorkletRenderer {
       timesig_num: 4,              // Time signature numerator
       timesig_den: 4               // Time signature denominator
     };
-
-    // Debug logging control
-    this.debug = false;             // Set to true to enable verbose logging
+    this.debug = false;
   }
 
   log(...args) {
     if (this.debug) {
+      console.log('🎵 [Audio]', ...args);
       logger.debug('Audio', args.join(' '));
     }
   }
@@ -83,7 +68,6 @@ class AudioWorkletRenderer {
 
     const bufferId = this.audioCounter++;
 
-    // Create placeholder buffer info
     const bufferInfo = {
       buffer: null,
       url: url,
@@ -97,7 +81,6 @@ class AudioWorkletRenderer {
 
     this.audioBuffers.set(instName, bufferInfo);
 
-    // Load the audio file
     try {
       this.log('Loading audio file:', url);
       const response = await fetch(url);
@@ -109,14 +92,12 @@ class AudioWorkletRenderer {
       const arrayBuffer = await response.arrayBuffer();
       const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
 
-      // Update buffer info with actual data
       bufferInfo.buffer = audioBuffer;
       bufferInfo.loaded = true;
       bufferInfo.sampleRate = audioBuffer.sampleRate;
       bufferInfo.channels = audioBuffer.numberOfChannels;
       bufferInfo.length = audioBuffer.length;
       bufferInfo.duration = audioBuffer.duration;
-
       this.log(`Audio loaded: ${url} - ${audioBuffer.duration.toFixed(2)}s, ${audioBuffer.numberOfChannels}ch, ${audioBuffer.sampleRate}Hz`);
 
       return bufferInfo;
@@ -130,7 +111,6 @@ class AudioWorkletRenderer {
   async initialize() {
     if (!this.audioContext) {
       try {
-        // Initialize timing parameters from environment
         this.timingParams.startTime = this.env.startTime || Date.now();
         this.timingParams.currentFrame = this.env.frame || 0;
         this.timingParams.targetFps = this.env.targetFps || 30;
@@ -213,7 +193,7 @@ class AudioWorkletRenderer {
       // Start keep-alive ping to ensure processor stays active
       this.startKeepAlive();
 
-      // Start periodic timing updates
+      // Start periodic timing updates (includes parameter updates)
       this.startTimingUpdates();
     } else {
       this.warn('Audio worklet not ready');
@@ -267,7 +247,6 @@ class AudioWorkletRenderer {
     const advanceFrame = (currentTime) => {
       if (!this.running) return;
 
-      // Only advance frame if enough time has passed
       if (currentTime - lastTime >= targetInterval) {
         this.env.frame++;
         lastTime = currentTime;
@@ -293,12 +272,14 @@ class AudioWorkletRenderer {
     // Send initial timing update
     this.updateTimingParams();
 
-    // Send timing updates every 500ms to keep audio in sync
+    // Send timing updates every 100ms to keep audio in sync
+    // Also update parameters on each timing update
     this.timingUpdateId = setInterval(() => {
       if (this.running) {
         this.updateTimingParams();
+        this.updateCrossContextParams(); // Update parameters frequently like visual renderers
       }
-    }, 500);
+    }, 100);
   }
 
   // Compile WEFT expressions to Audio Worklet processor using route-aware filtering
@@ -319,80 +300,73 @@ class AudioWorkletRenderer {
         return;
       }
 
-      // Reset compilation state
       this.audioStatements = [];
       this.instanceOutputs = {};
       this.crossContextParams = [];
       this.jsCode = [];
+      this.processExpressions.clear();
 
-      // Get the AST from environment
       const ast = this.env.currentProgram;
       if (!ast) {
         throw new Error('No AST available for compilation');
       }
 
-      // Filter statements for audio route
       this.filterAudioStatements(ast.statements);
 
-      // Process audio load statements
       await this.processAudioLoadStatements(ast.statements);
 
-      // Process audio statements to build dependency graph
-      this.processAudioStatements();
-
-      // Find and collect cross-context parameters needed by audio
+      // First collect cross-context params so instanceOutputs is populated
       this.collectCrossContextParams(ast);
 
-      // Generate processor code for the first play statement
+      // Then process audio statements (this uses instanceOutputs for compilation)
+      this.processAudioStatements();
+
       this.processorCount++;
       const stmt = playStatements[0];
       const processorCode = this.generateProcessorCode(stmt);
 
-      // Only recompile if source changed
       if (processorCode === this.currentSourceCode) {
         return;
       }
       this.currentSourceCode = processorCode;
-
-      // Create blob URL for the processor
       const blob = new Blob([processorCode], { type: 'application/javascript' });
       const processorUrl = URL.createObjectURL(blob);
 
-      // Register the worklet module
-      await this.audioContext.audioWorklet.addModule(processorUrl);
+      try {
+        await this.audioContext.audioWorklet.addModule(processorUrl);
+      } catch (error) {
+        console.error('🎵 Failed to load worklet module:', error);
+        throw error;
+      }
 
-      // Clean up old worklet
       if (this.workletNode) {
         this.workletNode.disconnect();
         this.workletNode = null;
       }
 
-      // Create new worklet node with unique processor name
       const processorName = `weft-audio-processor-${this.processorCount}`;
       this.workletNode = new AudioWorkletNode(this.audioContext, processorName);
       this.workletNode.connect(this.audioContext.destination);
 
-      // Add diagnostic event listeners
       this.workletNode.port.onmessage = (event) => {
         if (event.data.type === 'diagnostic') {
           this.log('Audio processor diagnostic:', event.data.message);
         } else if (event.data.type === 'test_response') {
           this.log('Audio processor responded to test:', event.data.message);
         } else if (event.data.type === 'keepalive_response') {
-          // Only log occasionally to avoid spam
           if (event.data.processorFrame % 44100 === 0) {
             this.log('Audio processor keep-alive: frame', event.data.processorFrame);
           }
         }
       };
 
-      // Clean up blob URL
       URL.revokeObjectURL(processorUrl);
 
       this.compiledProcessor = stmt;
       this.log('Audio compiled');
 
-      // Update cross-context parameters with current values
+      // Parameters will be updated by the timing system
+
       this.updateCrossContextParams();
 
     } catch (error) {
@@ -401,12 +375,10 @@ class AudioWorkletRenderer {
     }
   }
 
-  // Filter statements that are tagged for audio route
   filterAudioStatements(statements) {
     for (const stmt of statements) {
       if (this.hasAudioRoute(stmt)) {
         this.audioStatements.push(stmt);
-        this.log('Audio statement:', stmt.type, stmt.name || 'unnamed');
       }
     }
   }
@@ -421,24 +393,18 @@ class AudioWorkletRenderer {
         const audioPath = stmt.args[0] && stmt.args[0].type === 'Str' ? stmt.args[0].v : null;
         if (audioPath) {
           this.log('Processing audio load:', stmt.inst, 'from', audioPath);
-
-          // Load the audio buffer
           const bufferInfo = await this.loadAudioBuffer(audioPath, stmt.inst);
-
-          // Create output variables for audio buffer access
           for (const output of stmt.outs) {
             const outName = output.type === 'AliasedIdent' ? output.alias : output;
             const varName = `${stmt.inst}_${outName}`;
 
-            // Map output names to audio buffer properties
-            let bufferProperty = 'sample'; // default
+            let bufferProperty = 'sample';
             if (outName === 'sample' || outName === 's') bufferProperty = 'sample';
             else if (outName === 'duration' || outName === 'd') bufferProperty = 'duration';
             else if (outName === 'channels' || outName === 'ch') bufferProperty = 'channels';
             else if (outName === 'sampleRate' || outName === 'rate') bufferProperty = 'sampleRate';
             else if (outName === 'length' || outName === 'len') bufferProperty = 'length';
 
-            // Generate JavaScript to access buffer property
             this.generateAudioBufferAccess(varName, stmt.inst, bufferProperty);
             this.instanceOutputs[`${stmt.inst}@${outName}`] = varName;
           }
@@ -458,7 +424,6 @@ class AudioWorkletRenderer {
 
     switch (property) {
       case 'sample':
-        // This will be handled by a sample() function call
         this.jsCode.push(`this.${varName} = this.sampleAudioBuffer_${bufferId}.bind(this);`);
         break;
       case 'duration':
@@ -478,28 +443,26 @@ class AudioWorkletRenderer {
     }
   }
 
-  // Check if a node is tagged for audio route
   hasAudioRoute(node) {
     if (!node) return false;
 
-    // Check routes set
-    if (node.routes && node.routes.has('audio')) return true;
+    const hasRoutes = node.routes && node.routes.has('audio');
+    const hasPrimaryRoute = node.primaryRoute === 'audio';
+    const hasExprRoute = node.expr && this.hasAudioRoute(node.expr);
+    let hasArgRoute = false;
 
-    // Check primaryRoute
-    if (node.primaryRoute === 'audio') return true;
-
-    // For statements, also check their expressions
-    if (node.expr && this.hasAudioRoute(node.expr)) return true;
     if (node.args) {
       for (const arg of node.args) {
-        if (this.hasAudioRoute(arg)) return true;
+        if (this.hasAudioRoute(arg)) {
+          hasArgRoute = true;
+          break;
+        }
       }
     }
 
-    return false;
+    return hasRoutes || hasPrimaryRoute || hasExprRoute || hasArgRoute;
   }
 
-  // Process audio statements to build dependency graph
   processAudioStatements() {
     for (const stmt of this.audioStatements) {
       switch (stmt.type) {
@@ -514,8 +477,6 @@ class AudioWorkletRenderer {
           this.processAssignmentStatement(stmt);
           break;
         case 'PlayStmt':
-          // PlayStmt is an output statement, not a variable definition
-          // We'll process its expressions during generateProcessorCode
           this.log('Found PlayStmt - will process during code generation');
           break;
         default:
@@ -529,17 +490,23 @@ class AudioWorkletRenderer {
     for (let i = 0; i < stmt.outs.length; i++) {
       const outputName = stmt.outs[i];
       const varName = `${stmt.name}_${outputName}`;
-      const jsExpr = this.compileToJS(stmt.expr);
 
-      this.jsCode.push(`this.${varName} = ${jsExpr};`);
+      // Don't evaluate expressions in constructor - just initialize to 0
+      // Actual computation happens in the process loop
+      this.jsCode.push(`this.${varName} = 0.0; // Will be computed in process loop`);
       this.instanceOutputs[`${stmt.name}@${outputName}`] = varName;
 
-      this.log('Direct:', `${stmt.name}@${outputName} → ${varName} = ${jsExpr}`);
+      // Store the expression for later use in process loop
+      if (!this.processExpressions) {
+        this.processExpressions = new Map();
+      }
+      this.processExpressions.set(varName, stmt.expr);
+
+      this.log('Direct:', `${stmt.name}@${outputName} → ${varName} (expression stored for process loop)`);
     }
   }
 
   processLetStatement(stmt) {
-    // let x = expr → this.x = expr;
     const jsExpr = this.compileToJS(stmt.expr);
     this.jsCode.push(`this.${stmt.name} = ${jsExpr};`);
     this.instanceOutputs[stmt.name] = stmt.name;
@@ -548,7 +515,6 @@ class AudioWorkletRenderer {
   }
 
   processAssignmentStatement(stmt) {
-    // x = expr or x += expr, etc.
     const jsExpr = this.compileToJS(stmt.expr);
 
     if (stmt.op === '=') {
@@ -561,24 +527,17 @@ class AudioWorkletRenderer {
     this.log('Assignment:', `${stmt.name} ${stmt.op} ${jsExpr}`);
   }
 
-  // Collect cross-context parameters needed by audio route
   collectCrossContextParams(ast) {
     this.crossContextParams = [];
-
-    // Find all cross-context expressions used in audio statements
     const usedInAudio = new Set();
-
-    // Collect all variables referenced in audio statements
     this.audioStatements.forEach(stmt => {
       this.findVariableReferences(stmt, usedInAudio);
     });
 
-    // Find definitions for these variables in the main AST
     ast.statements.forEach(stmt => {
       if (this.isDefiningStatement(stmt)) {
         const varName = this.getDefinedVariable(stmt);
         if (usedInAudio.has(varName) && !this.hasAudioRoute(stmt)) {
-          // This variable is used in audio but defined outside audio route
           this.crossContextParams.push({
             name: varName,
             statement: stmt,
@@ -587,6 +546,35 @@ class AudioWorkletRenderer {
         }
       }
     });
+
+    // Also check pragmas for parameter instances
+    if (ast.pragmas) {
+      ast.pragmas.forEach(pragma => {
+        if (['slider', 'color', 'xy', 'toggle'].includes(pragma.type) && pragma.config) {
+          const instanceName = pragma.config.name;
+          if (usedInAudio.has(instanceName)) {
+            this.log('Found pragma parameter used in audio:', instanceName);
+            // Add each strand of the pragma as a cross-context parameter
+            pragma.config.strands.forEach(strand => {
+              const paramKey = `${instanceName}@${strand}`;
+              const varName = `${instanceName}_${strand}`;
+
+              // Map the parameter immediately so it's available during compilation
+              this.instanceOutputs[paramKey] = varName;
+              this.log(`Mapping pragma ${paramKey} → ${varName}`);
+
+              this.crossContextParams.push({
+                name: instanceName,
+                paramKey: paramKey,
+                strand: strand,
+                pragma: pragma,
+                type: 'pragma'
+              });
+            });
+          }
+        }
+      });
+    }
 
     if (this.crossContextParams.length > 0) {
       this.log('Cross-context params:', this.crossContextParams.map(p => p.name).join(', '));
@@ -636,7 +624,12 @@ class AudioWorkletRenderer {
     }
 
     const initLines = this.crossContextParams.map(param => {
-      if (param.outputs.length > 0) {
+      if (param.type === 'pragma') {
+        // Pragma parameters like sliders: test2<f>
+        const varName = `${param.name}_${param.strand}`;
+        // Mapping already done in collectCrossContextParams
+        return `this.${varName} = 440; // Pragma parameter, will be updated from main thread`;
+      } else if (param.outputs && param.outputs.length > 0) {
         // Direct statements with outputs: test<t> = value
         return param.outputs.map(output => {
           const varName = `${param.name}_${output}`;
@@ -951,6 +944,10 @@ class AudioWorkletRenderer {
       '      });',
       '    }',
       '',
+      '    // Debug: Log first few samples',
+      '    let debugSample = false;',
+      '    if (this.frame < 128) debugSample = true;',
+      '',
       '    let nonZeroSamples = 0;',
       '    let maxSample = 0;',
       '',
@@ -981,9 +978,20 @@ class AudioWorkletRenderer {
       '        measure: measure           // Current measure',
       '      };',
       '',
+      '      // Evaluate stored expressions that depend on me',
+      this.generateProcessExpressions(),
+      '',
       '      try {',
       '        const leftSample = ' + leftCode + ';',
       '        const rightSample = ' + rightCode + ';',
+      '',
+      '        // Debug logging for first few samples',
+      '        if (debugSample && i === 0) {',
+      '          this.port.postMessage({',
+      '            type: \'diagnostic\',',
+      '            message: \'Sample 0: L=\' + leftSample + \', test2_f=\' + this.test2_f',
+      '          });',
+      '        }',
       '',
       '        // Track statistics for diagnostics',
       '        if (Math.abs(leftSample) > 0.001) nonZeroSamples++;',
@@ -1027,6 +1035,20 @@ class AudioWorkletRenderer {
     // Generate code to update any time-dependent variables in the audio loop
     // For now, this is empty since we compute everything fresh each sample
     return '';
+  }
+
+  generateProcessExpressions() {
+    if (!this.processExpressions || this.processExpressions.size === 0) {
+      return '      // No process expressions to evaluate';
+    }
+
+    const lines = [];
+    this.processExpressions.forEach((expr, varName) => {
+      const jsExpr = this.compileToJS(expr);
+      lines.push(`      this.${varName} = ${jsExpr};`);
+    });
+
+    return lines.join('\n');
   }
 
   /**
@@ -1074,7 +1096,6 @@ class AudioWorkletRenderer {
 
       case 'StrandAccess':
         if (expr.base === 'me' || (expr.base && expr.base.type === 'Var' && expr.base.name === 'me')) {
-          // Handle me@time, me@sample, etc.
           switch (expr.out) {
             case 'time': return 'me.time';
             case 'abstime': return 'me.abstime';
@@ -1088,6 +1109,7 @@ class AudioWorkletRenderer {
         const outputName = expr.out;
         const key = `${baseName}@${outputName}`;
         const strandVar = this.instanceOutputs[key];
+        // console.log('🎵 [Compile] StrandAccess:', key, '→', strandVar || '0.0');
         return strandVar ? `this.${strandVar}` : '0.0';
 
       case 'If':
@@ -1296,7 +1318,6 @@ class AudioWorkletRenderer {
     }
   }
 
-  // Simple expression evaluator for cross-context parameters
   evaluateSimpleExpression(expr) {
     if (!expr) return 0;
 
@@ -1323,20 +1344,16 @@ class AudioWorkletRenderer {
         }
 
       case 'Call':
-        // Evaluate function calls
         const args = expr.args.map(arg => this.evaluateSimpleExpression(arg));
         return this.evaluateFunction(expr.name, args);
 
       case 'StrandAccess':
-        // Handle me@ expressions and other strand access
         return this.evaluateStrandAccess(expr);
 
       case 'Var':
-        // Handle variable references
         return this.evaluateVariable(expr.name);
 
       case 'If':
-        // Handle conditional expressions
         const condition = this.evaluateSimpleExpression(expr.cond);
         if (condition > 0) {
           return this.evaluateSimpleExpression(expr.t);
@@ -1503,19 +1520,15 @@ class AudioWorkletRenderer {
       return 0;
     }
 
-    // Check for special environment variables
     switch (varName) {
       case 'time': return (this.env.frame % this.env.loop) / this.env.targetFps;
       case 'frame': return this.env.frame;
       case 'bpm': return this.env.bpm;
       case 'loop': return this.env.loop;
       default:
-        // Unknown variable - return 0 as default
         return 0;
     }
   }
-
-  // Update cross-context parameters with current values
   updateCrossContextParams() {
     if (this.crossContextParams.length === 0 || !this.workletNode?.port) {
       return;
@@ -1527,39 +1540,55 @@ class AudioWorkletRenderer {
       try {
         let result;
 
-        // Extract value directly from the statement's expression
-        if (param.statement.expr) {
-          if (param.statement.expr.type === 'Num') {
-            result = param.statement.expr.v;
+        if (param.type === 'pragma') {
+          // Handle pragma parameters (sliders, etc.)
+          // Look up the strand directly, not the instance
+          const paramStrand = this.env.getParameterStrand(param.strand);
+          if (paramStrand && paramStrand.value !== undefined) {
+            result = paramStrand.value;
+            this.log(`Pragma param ${param.paramKey} = ${result}`);
           } else {
-            // For complex expressions, try to compile them
-            result = this.evaluateSimpleExpression(param.statement.expr);
+            result = 440; // Default fallback for frequency
+            this.warn(`Pragma param ${param.paramKey} not found, using default ${result}`);
           }
+          const varName = `${param.name}_${param.strand}`;
+          paramValues[varName] = result;
         } else {
-          result = 0; // Default fallback
-        }
+          // Handle regular statement parameters
+          if (param.statement.expr) {
+            if (param.statement.expr.type === 'Num') {
+              result = param.statement.expr.v;
+            } else {
+              result = this.evaluateSimpleExpression(param.statement.expr);
+            }
+          } else {
+            result = 0; // Default fallback
+          }
 
-        if (param.outputs.length > 0) {
-          // Direct statements: test<t> = value
-          param.outputs.forEach(output => {
-            const varName = `${param.name}_${output}`;
-            paramValues[varName] = result;
-          });
-        } else {
-          // Let/Assignment statements: test = value
-          paramValues[param.name] = result;
+          if (param.outputs && param.outputs.length > 0) {
+            param.outputs.forEach(output => {
+              const varName = `${param.name}_${output}`;
+              paramValues[varName] = result;
+            });
+          } else {
+            paramValues[param.name] = result;
+          }
         }
-
-        // Cross-context param updated
       } catch (error) {
         this.warn('Failed to evaluate cross-context param:', param.name, error);
       }
     });
 
-    // Send updated values to processor
+    // console.log('🎵 Sending params to worklet:', paramValues);
     this.workletNode.port.postMessage({
       type: 'updateCrossContext',
       params: paramValues
+    });
+
+    // Send test message to verify worklet communication
+    this.workletNode.port.postMessage({
+      type: 'test',
+      message: 'Testing worklet communication'
     });
   }
 }

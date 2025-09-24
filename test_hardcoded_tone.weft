@@ -1,2 +1,0 @@
-// Hardcoded test tone - simplest possible case
-play(audio: 0.1)

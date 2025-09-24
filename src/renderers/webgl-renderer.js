@@ -11,6 +11,8 @@ class WebGLRenderer {
     this.textures = new Map();
     this.textureUnits = [];
     this.textureCounter = 0;
+    this.maxTextureUnits = 8; // Conservative limit for compatibility
+    this.availableTextureUnits = [];
     this.frameBuffer = null;
     this.running = false;
     this.frames = 0;
@@ -35,10 +37,17 @@ class WebGLRenderer {
     // Check WebGL limits
     const maxViewportDims = this.gl.getParameter(this.gl.MAX_VIEWPORT_DIMS);
     const maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE);
-    console.log(`WebGL limits - Max viewport: ${maxViewportDims[0]}x${maxViewportDims[1]}, Max texture: ${maxTextureSize}`);
+    const maxTextureUnits = this.gl.getParameter(this.gl.MAX_TEXTURE_IMAGE_UNITS);
 
     this.maxWidth = maxViewportDims[0];
     this.maxHeight = maxViewportDims[1];
+    this.maxTextureUnits = Math.min(maxTextureUnits, 8); // Conservative limit
+
+    // Initialize available texture units pool
+    this.availableTextureUnits = [];
+    for (let i = 0; i < this.maxTextureUnits; i++) {
+      this.availableTextureUnits.push(i);
+    }
 
     // Setup basic quad geometry (two triangles forming a full-screen quad)
     const vertices = new Float32Array([
@@ -186,8 +195,7 @@ class WebGLRenderer {
             return multResult;
           case '/': return `(${left} / max(${right}, 0.000001))`;
           case '^':
-            const powerResult = `pow(${left}, ${right})`;
-return powerResult;
+            return `pow(${left}, ${right})`;
           case '%': return `mod(${left}, ${right})`;
           case '==': case '===': return `(${left} == ${right} ? 1.0 : 0.0)`;
           case '!=': return `(${left} != ${right} ? 1.0 : 0.0)`;
@@ -723,7 +731,7 @@ const displayStmt = renderStmt || this.env.displayAst;
     for (const [instName, textureInfo] of this.textures) {
       textureUniforms.push(`uniform sampler2D ${textureInfo.uniformName};`);
     }
-    
+
     // Generate parameter uniform declarations
     const parameterUniforms = [];
     if (this.env.parameters) {
@@ -1243,7 +1251,7 @@ ${glslCode.join('\n')}
         gl.uniform1i(this.uniforms[textureInfo.uniformName], textureInfo.unit);
       }
     }
-    
+
     // Cache parameter uniform locations
     if (this.env.parameters) {
       for (const [paramName, paramStrand] of this.env.parameters) {
@@ -1294,7 +1302,7 @@ ${glslCode.join('\n')}
     gl.uniform1f(this.uniforms.measure, Math.floor(absTime * beatsPerSecond / env.timesig_num));
 
     gl.uniform2f(this.uniforms.mouse, env.mouse.x, env.mouse.y);
-    
+
     // Set parameter uniforms
     if (env.parameters) {
       for (const [paramName, paramStrand] of env.parameters) {

@@ -39,8 +39,6 @@ class HoverDetector {
 
     // Insert overlay in editor container
     const editorContainer = this.editor.parentElement;
-    console.log('🏠 Editor container:', editorContainer);
-    console.log('🎯 Editor:', this.editor);
 
     if (!editorContainer) {
       console.error('❌ No editor container found! Cannot create hover overlay.');
@@ -49,12 +47,9 @@ class HoverDetector {
 
     if (editorContainer.style.position !== 'relative') {
       editorContainer.style.position = 'relative';
-      console.log('📍 Set editor container position to relative');
     }
 
     editorContainer.appendChild(this.overlay);
-    console.log('✅ Hover overlay appended to editor container');
-    console.log('🔧 Overlay element:', this.overlay);
   }
 
   setupUpdateListeners() {
@@ -86,11 +81,8 @@ class HoverDetector {
 
   updateHoverZones() {
     if (!this.isEnabled) {
-      console.log('🚫 Hover detection is disabled, skipping update');
       return;
     }
-
-    console.log('🔄 Updating hover zones...');
 
     // Clear existing hover elements
     this.clearHoverZones();
@@ -98,18 +90,14 @@ class HoverDetector {
     const text = this.editor.value;
     const parameterNames = Array.from(this.env.parameters.keys());
 
-    console.log('📝 Editor text length:', text.length);
-    console.log('📋 Available parameters:', parameterNames);
 
     if (parameterNames.length === 0) {
-      console.log('⚠️ No parameters found, skipping hover zone creation');
       return;
     }
 
     // Find all parameter occurrences in text
     const parameterOccurrences = this.findParameterOccurrences(text, parameterNames);
 
-    console.log(`✨ Found ${parameterOccurrences.length} parameter occurrences`);
 
     // Create hover zones for each occurrence
     this.createHoverZones(text, parameterOccurrences);
@@ -117,14 +105,12 @@ class HoverDetector {
     // Sync scroll position
     this.syncOverlayScroll();
 
-    console.log('✅ Hover zones update completed');
   }
 
   findParameterOccurrences(text, parameterNames) {
     const occurrences = [];
     const lines = text.split('\n');
 
-    console.log('🔍 Looking for parameter occurrences:', parameterNames);
 
     lines.forEach((line, lineIndex) => {
       parameterNames.forEach(paramName => {
@@ -374,10 +360,7 @@ class HoverDetector {
       // Only hide if mouse is not over the popover itself
       const popover = this.widgetManager.activePopover;
       if (popover && !popover.matches(':hover')) {
-        console.log(`🫥 Hiding popover`);
         this.widgetManager.hidePopover();
-      } else {
-        console.log(`🎯 Mouse is over popover, keeping it open`);
       }
     }, 200);
   }

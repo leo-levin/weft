@@ -1,9 +1,0 @@
-// Stereo audio test
-left_freq<f> = 440
-right_freq<f> = 550
-left_wave<t> = sin(me@time * left_freq@f * 2 * 3.14159)
-right_wave<t> = sin(me@time * right_freq@f * 2 * 3.14159)
-play(left: left_wave@t * 0.1, right: right_wave@t * 0.1)
-
-// Visual representation
-display(left_wave@t + 1, right_wave@t + 1, 0)

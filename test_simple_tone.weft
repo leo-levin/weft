@@ -1,3 +1,0 @@
-// Very simple test tone
-play(audio: sin(me@time * 440 * 6.28) * 0.1)
-display(0, 0, 0)

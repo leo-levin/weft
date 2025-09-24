@@ -139,10 +139,8 @@ function extractPragmas(sourceCode) {
 
       // Parse pragma body based on type
       if (type === 'slider') {
-        console.log(`🔍 Parsing slider pragma body: "${body}"`);
         // Updated regex to use = instead of :
         const sliderMatch = body.match(/(\w+)<(.+?)>\s*=\s*([0-9.,\s]+)\s+"(.+?)"/);
-        console.log('🎯 Slider match result:', sliderMatch);
 
         if (sliderMatch) {
           const [, name, strands, rangeStr, label] = sliderMatch;
@@ -157,7 +155,6 @@ function extractPragmas(sourceCode) {
             range = [0, parseFloat(rangeStr.trim())];
           }
 
-          console.log(`📊 Parsed range from "${rangeStr}":`, range);
 
           pragma.config = {
             name,
@@ -166,14 +163,9 @@ function extractPragmas(sourceCode) {
             label
           };
 
-          console.log('✅ Parsed slider config:', pragma.config);
-        } else {
-          console.log('❌ Slider pragma did not match regex');
         }
       } else if (type === 'color') {
-        console.log(`🎨 Parsing color pragma body: "${body}"`);
         const colorMatch = body.match(/(\w+)<(.+?)>\s*=\s*"(.+?)"/);
-        console.log('🎯 Color match result:', colorMatch);
 
         if (colorMatch) {
           const [, name, strands, label] = colorMatch;
@@ -183,14 +175,9 @@ function extractPragmas(sourceCode) {
             label,
             defaultValue: '#ff0000'
           };
-          console.log('✅ Parsed color config:', pragma.config);
-        } else {
-          console.log('❌ Color pragma did not match regex');
         }
       } else if (type === 'xy') {
-        console.log(`📐 Parsing xy pragma body: "${body}"`);
         const xyMatch = body.match(/(\w+)<(.+?)>\s*=\s*\(([0-9.,\s]+)\),\s*\(([0-9.,\s]+)\)\s+"(.+?)"/);
-        console.log('🎯 XY match result:', xyMatch);
 
         if (xyMatch) {
           const [, name, strands, xRange, yRange, label] = xyMatch;
@@ -207,14 +194,9 @@ function extractPragmas(sourceCode) {
             label,
             defaultValue: { x: (xRangeParts[0] + xRangeParts[1]) / 2, y: (yRangeParts[0] + yRangeParts[1]) / 2 }
           };
-          console.log('✅ Parsed XY config:', pragma.config);
-        } else {
-          console.log('❌ XY pragma did not match regex');
         }
       } else if (type === 'toggle') {
-        console.log(`🔘 Parsing toggle pragma body: "${body}"`);
         const toggleMatch = body.match(/(\w+)<(.+?)>\s*=\s*(true|false)\s+"(.+?)"/);
-        console.log('🎯 Toggle match result:', toggleMatch);
 
         if (toggleMatch) {
           const [, name, strands, defaultVal, label] = toggleMatch;
@@ -224,9 +206,6 @@ function extractPragmas(sourceCode) {
             label,
             defaultValue: defaultVal === 'true'
           };
-          console.log('✅ Parsed toggle config:', pragma.config);
-        } else {
-          console.log('❌ Toggle pragma did not match regex');
         }
       } else if (type === 'badge') {
         const badgeMatch = body.match(/(\w+)<(.+?)>/);
@@ -248,11 +227,9 @@ function extractPragmas(sourceCode) {
 const sem = g.createSemantics().addOperation('ast', {
   Program(stmts) {
     // Simple single-pass parsing - no expansion during parse
-    console.log(`🚀 Program parsing started with ${stmts.children.length} statements`);
     const statements = [];
     for (let i = 0; i < stmts.children.length; i++) {
       const stmt = stmts.children[i];
-      console.log(`📝 Processing statement ${i + 1}: ${stmt.sourceString.substring(0, 50)}...`);
       try {
         const ast = stmt.ast();
         if (ast.type === 'MultiCallExpanded') {
@@ -260,7 +237,6 @@ const sem = g.createSemantics().addOperation('ast', {
         } else {
           statements.push(ast);
         }
-        console.log(`✅ Statement ${i + 1} parsed successfully as ${ast.type}`);
       } catch (error) {
         console.error(`❌ Statement ${i + 1} failed to parse:`, error.message);
         throw error;
@@ -298,7 +274,6 @@ const sem = g.createSemantics().addOperation('ast', {
 
     InstanceBinding_direct(name, _sp1, outputs, _sp2, _eq, _sp3, expr) {
       // Parse as regular Direct statement - expansion happens in post-processing
-      console.log(`📋 Parsing direct: ${name.sourceString} with outputs: ${outputs.sourceString} = ${expr.sourceString}`);
       return {
         type: 'Direct',
         name: name.ast(),
@@ -309,7 +284,6 @@ const sem = g.createSemantics().addOperation('ast', {
 
     InstanceBinding_call(func, _lp, args, _rp, _dc, inst, outputs) {
       // Parse as regular call - expansion happens in post-processing
-      console.log(`🔧 Parsing call: ${func.sourceString} with args: ${args.sourceString}`);
       return {
         type: 'CallInstance',
         callee: func.ast(),

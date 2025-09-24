@@ -8,18 +8,31 @@ class Logger {
     this.filters = { debug: true, info: true, warn: true, error: true };
     this.componentFilters = {}; // Empty means show all components
     this.autoScroll = true;
+    this.pendingUpdate = false;
+    this.updatePending = false;
   }
 
   log(level, component, message, data = null) {
     const timestamp = new Date().toLocaleTimeString();
     const entry = { level, component, message, data, timestamp, id: Date.now() + Math.random() };
-    
+
     this.logs.push(entry);
     if (this.logs.length > this.maxLogs) {
       this.logs.shift();
     }
-    
-    this.updateUI();
+
+    this.scheduleUpdate();
+  }
+
+  scheduleUpdate() {
+    if (this.updatePending) return;
+    this.updatePending = true;
+
+    // Batch DOM updates using requestAnimationFrame for better performance
+    requestAnimationFrame(() => {
+      this.updateUI();
+      this.updatePending = false;
+    });
   }
 
   debug(component, message, data = null) { this.log('debug', component, message, data); }
@@ -29,17 +42,17 @@ class Logger {
 
   clear() {
     this.logs = [];
-    this.updateUI();
+    this.scheduleUpdate();
   }
 
   setFilters(filters) {
     this.filters = { ...this.filters, ...filters };
-    this.updateUI();
+    this.scheduleUpdate();
   }
 
   setComponentFilters(componentFilters) {
     this.componentFilters = { ...componentFilters };
-    this.updateUI();
+    this.scheduleUpdate();
   }
 
   getActiveComponents() {
@@ -51,7 +64,7 @@ class Logger {
   // Convenience methods for component filtering
   showOnlyComponent(component) {
     this.componentFilters = { [component]: true };
-    this.updateUI();
+    this.scheduleUpdate();
   }
 
   showOnlyComponents(components) {
@@ -59,17 +72,17 @@ class Logger {
     components.forEach(component => {
       this.componentFilters[component] = true;
     });
-    this.updateUI();
+    this.scheduleUpdate();
   }
 
   hideComponent(component) {
     delete this.componentFilters[component];
-    this.updateUI();
+    this.scheduleUpdate();
   }
 
   showAllComponents() {
     this.componentFilters = {};
-    this.updateUI();
+    this.scheduleUpdate();
   }
 
   updateUI() {
@@ -157,7 +170,7 @@ class Logger {
         } else {
           delete this.componentFilters[component];
         }
-        this.updateUI();
+        this.scheduleUpdate();
       });
 
       const text = document.createTextNode(component);
@@ -178,7 +191,7 @@ class Logger {
     if (showAllBtn && !showAllBtn.dataset.listenerAdded) {
       showAllBtn.addEventListener('click', () => {
         this.componentFilters = {};
-        this.updateUI();
+        this.scheduleUpdate();
       });
       showAllBtn.dataset.listenerAdded = 'true';
     }
@@ -192,7 +205,7 @@ class Logger {
         if (components.length > 0) {
           this.componentFilters[components[0]] = true;
         }
-        this.updateUI();
+        this.scheduleUpdate();
       });
       hideAllBtn.dataset.listenerAdded = 'true';
     }
@@ -280,24 +293,33 @@ const lerp = (a,b,t)=>a+(b-a)*t;
 const nowSec = ()=>performance.now()/1000;
 const isNum = v => typeof v === 'number' && isFinite(v);
 
-// Optimized hash using integer math and lookup table
-const HASH_MULTIPLIER = 0x9E3779B97F4A7C15n;
+// Optimized hash using integer math - avoid expensive BigInt operations
 const hashCache = new Map();
+const MAX_CACHE_SIZE = 1000;
 
 function hash3(x, y, z) {
   // Use integer coordinates for cache key
-  const key = `${x|0},${y|0},${z|0}`;
+  const xi = x | 0, yi = y | 0, zi = z | 0;
+  const key = `${xi},${yi},${zi}`;
   let cached = hashCache.get(key);
   if (cached !== undefined) return cached;
 
-  // Fast integer hash
-  let h = BigInt(x * 73856093 ^ y * 19349663 ^ z * 83492791) * HASH_MULTIPLIER;
-  h = Number((h >> 32n) & 0xFFFFFFFFn) / 0xFFFFFFFF;
+  // Fast integer hash using 32-bit arithmetic instead of BigInt
+  let h = ((xi * 73856093) ^ (yi * 19349663) ^ (zi * 83492791)) >>> 0;
+  h = ((h ^ (h >>> 16)) * 0x85ebca6b) >>> 0;
+  h = ((h ^ (h >>> 13)) * 0xc2b2ae35) >>> 0;
+  h = (h ^ (h >>> 16)) >>> 0;
 
-  // Cache with size limit
-  if (hashCache.size > 10000) hashCache.clear();
-  hashCache.set(key, h);
-  return h;
+  // Normalize to [0, 1]
+  const result = h / 0xFFFFFFFF;
+
+  // LRU cache management - remove oldest entry when full
+  if (hashCache.size >= MAX_CACHE_SIZE) {
+    const firstKey = hashCache.keys().next().value;
+    hashCache.delete(firstKey);
+  }
+  hashCache.set(key, result);
+  return result;
 }
 
 // Faster smoothstep using optimized formula
@@ -587,11 +609,6 @@ class Env {
     
     // Keep only the essential check
     const lvlInstance = this.instances.get('lvl');
-    if (lvlInstance) {
-      console.log('✅ Parameter instance "lvl" created successfully');
-    } else {
-      console.log('❌ Parameter instance "lvl" NOT found');
-    }
   }
   time(){ return (performance.now() - this.boot) / 1000; }
 }
@@ -699,10 +716,6 @@ function evalExprToStrand(node, env) {
         if(!strand) throw new RuntimeError(`'${base}' has no output '${out}'`);
         if(strand.kind === 'strand') {
           const value = strand.evalAt(me, scope);
-          // Only log for parameter strands
-          if (base === 'lvl' && out === 'l') {
-            console.log(`🎛️ Parameter lvl@l = ${value}`);
-          }
           return value;
         }
         if(typeof strand === 'function') return strand(me, scope); // backward compatibility
@@ -842,7 +855,6 @@ class ParameterStrand {
   
   setValue(newValue) {
     if (this.value !== newValue) {
-      console.log(`🎛️ Parameter '${this.name}' value changed: ${this.value} → ${newValue}`);
       this.value = newValue;
       this.isDirty = true;
       this.notifySubscribers();
@@ -1387,7 +1399,35 @@ const BuiltinSpindles = {
     // Map outputs based on their names or positions
     for (let i = 0; i < outs.length; i++) {
       const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
-      
+
+      // Handle metadata strands
+      if (outName === 'w' || outName === 'width') {
+        instanceOuts[outName] = {
+          kind: 'strand',
+          evalAt: (_me, _env) => sampler.width || 0
+        };
+        logger.debug('Builtin', `Mapped output '${outName}' to width metadata`);
+        continue;
+      } else if (outName === 'h' || outName === 'height') {
+        instanceOuts[outName] = {
+          kind: 'strand',
+          evalAt: (_me, _env) => sampler.height || 0
+        };
+        logger.debug('Builtin', `Mapped output '${outName}' to height metadata`);
+        continue;
+      } else if (outName === 'd' || outName === 'duration') {
+        instanceOuts[outName] = {
+          kind: 'strand',
+          evalAt: (_me, _env) => {
+            if (sampler.video && sampler.video.duration) return sampler.video.duration;
+            if (sampler.kind === 'audio' && env.audio.element && env.audio.element.duration) return env.audio.element.duration;
+            return 0;
+          }
+        };
+        logger.debug('Builtin', `Mapped output '${outName}' to duration metadata`);
+        continue;
+      }
+
       // Try to map based on common color channel names
       let componentIndex = 0; // default to red
       if (outName === 'r' || outName === 'red') componentIndex = 0;
@@ -1410,7 +1450,7 @@ const BuiltinSpindles = {
         kind: 'strand',
         evalAt: (me, env) => getComponent(componentIndex, me, env)
       };
-      
+
       logger.debug('Builtin', `Mapped output '${outName}' to component ${componentIndex}`);
     }
 
@@ -2009,27 +2049,20 @@ class Executor {
 
         // Special handling for 'me' instance parameter updates
         if (s.name === 'me') {
-          console.log('🔧 Processing me instance update:', s.outs);
           for (const outName of s.outs) {
             if (outName === 'loop' || outName === 'bpm' || outName === 'fps' || outName === 'timesig_num' || outName === 'timesig_den') {
               // Evaluate the expression to get the value and update the environment
               const value = toScalar(fx({}, this.env));
-              console.log(`🔧 Setting me.${outName} =`, value);
               if (outName === 'loop') {
                 this.env.loop = Math.max(1, Math.floor(value));
-                console.log(`Updated me loop to:`, this.env.loop);
               } else if (outName === 'bpm') {
                 this.env.bpm = Math.max(1, value);
-                console.log(`Updated me bpm to:`, this.env.bpm);
               } else if (outName === 'fps') {
                 this.env.targetFps = Math.max(1, Math.min(120, value));
-                console.log(`Updated me fps to:`, this.env.targetFps);
               } else if (outName === 'timesig_num') {
                 this.env.timesig_num = Math.max(1, Math.floor(value));
-                console.log(`Updated me timesig_num to:`, this.env.timesig_num);
               } else if (outName === 'timesig_den') {
                 this.env.timesig_den = Math.max(1, Math.floor(value));
-                console.log(`Updated me timesig_den to:`, this.env.timesig_den);
               }
             }
           }
