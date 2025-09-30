@@ -1,4 +1,0 @@
-// Simple test to verify parsing works
-sin(me@x * 5) :: pattern<val>
-pattern@val(me@y, me@x) :: swapped<val>
-display(swapped@val, 0, 0)

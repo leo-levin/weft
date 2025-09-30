@@ -1,0 +1,14 @@
+me<loop> = 400
+me<width>=1000
+me<height>=1000
+
+load("assets/jerome.jpg")::img<r,g,b>
+
+img2<r> = img@r(me@x,if me@x >> (mouse@x) then me@y else mouse@y)
+img2<g> = img@g(me@x,if me@x >> (mouse@x) then me@y else mouse@y)
+img2<b> = img@b(me@x,if me@x >> (mouse@x) then me@y else mouse@y)
+
+// img2 = img(me@x,if me@x >> (mouse@x) then me@y else mouse@y)
+
+
+display(img2)

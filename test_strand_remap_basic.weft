@@ -1,7 +1,0 @@
-// Basic coordinate remapping test
-// Tests swapping x and y coordinates
-
-noise(me@x*3, me@y*3) :: original<val>
-original@val(me@y, me@x) :: swapped<val>
-
-display(swapped@val, swapped@val, swapped@val)
