@@ -1,0 +1,61 @@
+// WEFT Standard Library
+// Core mathematical and utility functions
+
+// Basic math spindles
+spindle sin(x) :: <result> {
+  result = sin(x)
+}
+
+spindle cos(x) :: <result> {
+  result = cos(x)
+}
+
+spindle abs(x) :: <result> {
+  result = abs(x)
+}
+
+spindle sqrt(x) :: <result> {
+  result = sqrt(x)
+}
+
+spindle min(a, b) :: <result> {
+  result = min(a, b)
+}
+
+spindle max(a, b) :: <result> {
+  result = max(a, b)
+}
+
+// Utility spindles
+spindle clamp(val, minVal, maxVal) :: <result> {
+  result = clamp(val, minVal, maxVal)
+}
+
+spindle mix(a, b, t) :: <result> {
+  result = a + (b - a) * t
+}
+
+spindle smoothstep(edge0, edge1, x) :: <result> {
+  let t = clamp((x - edge0) / (edge1 - edge0), 0, 1)
+  result = t * t * (3 - 2 * t)
+}
+
+// Circle generator
+spindle circle(x, y, cx, cy, r) :: <result> {
+  let dx = x - cx
+  let dy = y - cy
+  let d = sqrt(dx * dx + dy * dy)
+  result = if d < r then 1 else 0
+}
+
+// Threshold filter
+spindle threshold(input, level) :: <result> {
+  result = if input > level then 1 else 0
+}
+
+// Compose - combines multiple inputs into outputs
+spindle compose(r, g, b) :: <r, g, b> {
+  r = r
+  g = g
+  b = b
+}

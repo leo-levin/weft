@@ -177,6 +177,19 @@ class StrandAccessExpr extends ASTNode {
   }
 }
 
+class StrandRemapExpr extends ASTNode {
+  constructor(base, strand, coordinates) {
+    super('StrandRemap');
+    this.base = base;           // Instance name (e.g., 'img')
+    this.strand = strand;       // Strand name (e.g., 'r')
+    this.coordinates = coordinates;  // Array of coordinate expressions
+  }
+
+  getChildren() {
+    return [this.base, this.strand, ...this.coordinates];
+  }
+}
+
 class IfExpr extends ASTNode {
   constructor(condition, thenExpr, elseExpr) {
     super('If');
@@ -364,6 +377,7 @@ export {
   TupleExpr,
   IndexExpr,
   StrandAccessExpr,
+  StrandRemapExpr,
   IfExpr,
   LetBinding,
   Assignment,

@@ -1,0 +1,11 @@
+// Simple test of visual-audio sampling
+// Sample a specific pixel from an image to modulate audio
+
+load("assets/jerome.jpg")::img<r,g,b>
+
+// Display the image
+display(img@r, img@g, img@b)
+
+// Play a sine wave modulated by sampling the center of the image
+// This samples img@r at (0.5, 0.5) - the center pixel
+play(sin(me@time * 440 * 2 * 3.14159) * img@r(0.5, 0.5))

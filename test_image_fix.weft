@@ -1,0 +1,6 @@
+me<loop> = 30
+load("assets/jerome.jpg")::img<r,g,b>
+img2<r> = img@r(me@x,me@time-1)
+img2<g> = img@g(me@x,me@time)
+img2<b> = img@b(me@time,me@y)
+display(img2@r,img2@g,img2@b)

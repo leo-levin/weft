@@ -1,0 +1,21 @@
+// Test coordinate scaling and centering
+
+// Create a circle pattern
+let centerX = 0.5
+let centerY = 0.5
+let radius = distance(me@x, me@y, centerX, centerY)
+radius * 5 :: circle<val>
+
+// Scale down the circle by remapping coordinates
+circle@val(
+  (me@x - centerX) * 0.5 + centerX,
+  (me@y - centerY) * 0.5 + centerY
+) :: scaled<val>
+
+// Also create a stretched version
+circle@val(
+  (me@x - centerX) * 2.0 + centerX,
+  me@y
+) :: stretched<val>
+
+display(scaled@val, circle@val, stretched@val)

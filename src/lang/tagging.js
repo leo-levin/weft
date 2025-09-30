@@ -55,8 +55,27 @@ function findOutputStatements(ast) {
 
       outputStatements.push(node);
     }
-    const children = node.getChildren ? node.getChildren() : [];
-    children.forEach(child => traverse(child));
+
+    // Handle different ways nodes might have children
+    let children = [];
+    if (typeof node.getChildren === 'function') {
+      children = node.getChildren();
+    } else if (node.children) {
+      children = node.children;
+    } else if (node.args) {
+      children = node.args;
+    } else if (node.expr) {
+      children = [node.expr];
+    } else if (node.left && node.right) {
+      children = [node.left, node.right];
+    }
+
+    children.forEach(child => {
+      if (child && typeof child === 'object') {
+        traverse(child);
+      }
+    });
+
     if (node.statements) {
       node.statements.forEach(stmt => traverse(stmt));
     }
@@ -91,8 +110,25 @@ function traceDependencies(outputStmt, ast) {
       }
     }
 
-    const children = expr.getChildren ? expr.getChildren() : [];
-    children.forEach(child => traceExpr(child));
+    // Handle different ways nodes might have children
+    let children = [];
+    if (typeof expr.getChildren === 'function') {
+      children = expr.getChildren();
+    } else if (expr.children) {
+      children = expr.children;
+    } else if (expr.args) {
+      children = expr.args;
+    } else if (expr.expr) {
+      children = [expr.expr];
+    } else if (expr.left && expr.right) {
+      children = [expr.left, expr.right];
+    }
+
+    children.forEach(child => {
+      if (child && typeof child === 'object') {
+        traceExpr(child);
+      }
+    });
   }
 
   if (outputStmt.args) {
@@ -112,8 +148,25 @@ function buildVariableBindings(ast) {
       bindings.set(node.name, node);
     }
 
-    const children = node.getChildren ? node.getChildren() : [];
-    children.forEach(child => traverse(child));
+    // Handle different ways nodes might have children
+    let children = [];
+    if (typeof node.getChildren === 'function') {
+      children = node.getChildren();
+    } else if (node.children) {
+      children = node.children;
+    } else if (node.args) {
+      children = node.args;
+    } else if (node.expr) {
+      children = [node.expr];
+    } else if (node.left && node.right) {
+      children = [node.left, node.right];
+    }
+
+    children.forEach(child => {
+      if (child && typeof child === 'object') {
+        traverse(child);
+      }
+    });
 
     if (node.statements) {
       node.statements.forEach(stmt => traverse(stmt));
@@ -135,8 +188,25 @@ function findCrossContextExpressions(ast) {
       crossContextExprs.push(node);
     }
 
-    const children = node.getChildren ? node.getChildren() : [];
-    children.forEach(child => traverse(child));
+    // Handle different ways nodes might have children
+    let children = [];
+    if (typeof node.getChildren === 'function') {
+      children = node.getChildren();
+    } else if (node.children) {
+      children = node.children;
+    } else if (node.args) {
+      children = node.args;
+    } else if (node.expr) {
+      children = [node.expr];
+    } else if (node.left && node.right) {
+      children = [node.left, node.right];
+    }
+
+    children.forEach(child => {
+      if (child && typeof child === 'object') {
+        traverse(child);
+      }
+    });
 
     if (node.statements) {
       node.statements.forEach(stmt => traverse(stmt));

@@ -1,9 +1,13 @@
 import { Parser } from '../lang/parser.js';
 import { tagExpressionRoutes } from '../lang/tagging.js';
-import { Env, Executor, clamp, isNum, logger, Sampler } from '../runtime/runtime.js';
+import { Env, Executor } from '../runtime/runtime.js';
+import { Sampler } from '../runtime/media/sampler.js';
+import { clamp, isNum } from '../utils/math.js';
+import { logger } from '../utils/logger.js';
 import { Renderer } from '../renderers/renderer.js';
 import { WebGLRenderer } from '../renderers/webgl-renderer.js';
 import { AudioWorkletRenderer } from '../renderers/audio-worklet-renderer.js';
+import { RendererManager } from '../renderers/renderer-manager.js';
 import { WidgetManager } from './widget-manager.js';
 import { HoverDetector } from './hover-detector.js';
 import { CoordinateProbe } from './coordinate-probe.js';
@@ -30,9 +34,8 @@ const canvas = document.getElementById('out');
 const env = new Env();
 const executor = new Executor(env, Parser);
 
-// Initialize renderer - will be set up after all scripts load
-let renderer;
-let audioRenderer;
+// Initialize renderer manager - coordinates all renderers
+let rendererManager;
 
 // Initialize widget manager for parameter controls
 let widgetManager;
@@ -123,40 +126,45 @@ function cleanASTForDisplay(node) {
 }
 
 function initializeRenderer() {
-  const useWebGL = true; // Re-enabling - it's working better than expected!
-
-  if (useWebGL && typeof WebGLRenderer !== 'undefined') {
-    try {
-      renderer = new WebGLRenderer(canvas, env);
-      if (renderer.gl && renderer.initWebGL() !== false) {
-        console.log('Using WebGL renderer for GPU acceleration');
-      } else {
-        throw new Error('WebGL context initialization failed');
-      }
-    } catch (e) {
-      console.warn('WebGL failed, falling back to CPU renderer:', e);
-      renderer = new Renderer(canvas, env);
-    }
-  } else {
-    console.log('Using CPU renderer');
-    renderer = new Renderer(canvas, env);
+  if (rendererManager) {
+    console.log('Renderer manager already initialized');
+    return;
   }
 
-  // Initialize audio renderer
-  if (!audioRenderer) {
-    audioRenderer = new AudioWorkletRenderer(env);
-    console.log('🎵 Audio renderer initialized');
+  console.log('Initializing unified renderer manager...');
+
+  // Create renderer manager
+  rendererManager = new RendererManager(env);
+
+  // Create individual renderers
+  const cpuRenderer = new Renderer(canvas, env);
+  rendererManager.registerRenderer('cpu', cpuRenderer);
+  console.log('✅ CPU renderer registered');
+
+  // Try to initialize WebGL renderer
+  try {
+    const webglRenderer = new WebGLRenderer(canvas, env);
+    // Register WebGL renderer - actual initialization happens later
+    rendererManager.registerRenderer('webgl', webglRenderer);
+    console.log('✅ WebGL renderer registered');
+  } catch (error) {
+    console.warn('WebGL renderer creation failed:', error);
+    console.log('Falling back to CPU rendering only');
+  }
+
+  // Initialize audio renderer with renderer manager reference
+  try {
+    const audioRenderer = new AudioWorkletRenderer(env, rendererManager);
+    rendererManager.registerRenderer('audio', audioRenderer);
+    console.log('✅ Audio renderer registered');
 
     // Add click handler to resume AudioContext on user interaction
     const resumeAudioContext = async () => {
+      const audioRenderer = rendererManager.getRenderer('audio');
       if (audioRenderer && audioRenderer.audioContext && audioRenderer.audioContext.state === 'suspended') {
         try {
           await audioRenderer.audioContext.resume();
-
-          // Update parameters again now that context is running
-          if (audioRenderer.updateCrossContextParams) {
-            audioRenderer.updateCrossContextParams();
-          }
+          console.log('🎵 AudioContext resumed after user interaction');
         } catch (error) {
           console.error('Failed to resume AudioContext:', error);
         }
@@ -166,6 +174,8 @@ function initializeRenderer() {
     // Add event listeners for user interaction
     document.addEventListener('click', resumeAudioContext, { once: true });
     document.addEventListener('keydown', resumeAudioContext, { once: true });
+  } catch (error) {
+    console.warn('Audio renderer initialization failed:', error);
   }
   
   // Initialize widget manager after renderer is ready
@@ -183,14 +193,19 @@ function initializeRenderer() {
   
   // Initialize coordinate probe for spatial exploration
   if (!coordinateProbe) {
-    coordinateProbe = new CoordinateProbe(canvas, env, renderer, executor);
+    // Use the CPU renderer for coordinate probing
+    const cpuRenderer = rendererManager.getRenderer('cpu');
+    coordinateProbe = new CoordinateProbe(canvas, env, cpuRenderer, executor);
     console.log('✅ Coordinate probe initialized');
   }
 
   // Initialize clock display for time control
   if (!clockDisplay) {
     clockDisplay = new ClockDisplay(env);
-    clockDisplay.setRenderer(renderer);
+    const cpuRenderer = rendererManager.getRenderer('cpu');
+    if (cpuRenderer) {
+      clockDisplay.setRenderer(cpuRenderer);
+    }
     console.log('✅ Clock display initialized');
   }
 }
@@ -260,12 +275,15 @@ document.getElementById('mediaBtn').addEventListener('click', async ()=>{
   try { env.defaultSampler && env.defaultSampler.play(); } catch {}
 
   // Resume audio worklet context
-  if (audioRenderer && audioRenderer.audioContext) {
-    try {
-      await audioRenderer.audioContext.resume();
-      console.log('🎵 AudioContext resumed');
-    } catch (error) {
-      console.warn('🎵 Failed to resume AudioContext:', error);
+  if (rendererManager) {
+    const audioRenderer = rendererManager.getRenderer('audio');
+    if (audioRenderer && audioRenderer.audioContext) {
+      try {
+        await audioRenderer.audioContext.resume();
+        console.log('🎵 AudioContext resumed');
+      } catch (error) {
+        console.warn('🎵 Failed to resume AudioContext:', error);
+      }
     }
   }
 });
@@ -282,8 +300,8 @@ async function runCode(){
   // Clear previous logs
   logger.clear();
 
-  // Initialize renderer if not already done
-  if (!renderer) {
+  // Initialize renderer manager if not already done
+  if (!rendererManager) {
     initializeRenderer();
   }
 
@@ -314,37 +332,33 @@ async function runCode(){
     }
 
     executor.run(ast);
-    renderer.stop();
 
-    // Stop audio renderer
-    if (audioRenderer) {
-      audioRenderer.stop();
+    // Stop all renderers
+    rendererManager.stop();
+
+    // Compile all renderers for the new AST
+    logger.info('Main', 'Starting compilation for all renderers');
+    const compilationSuccess = await rendererManager.compile(ast);
+
+    if (!compilationSuccess) {
+      logger.warn('Main', 'Some renderers failed to compile');
     }
 
-    // Recreate WebGL renderer if needed to recompile shaders
-    if (typeof WebGLRenderer !== 'undefined' && renderer instanceof WebGLRenderer) {
-      logger.info('Main', 'Recreating WebGL renderer');
-      renderer = new WebGLRenderer(canvas, env);
+    // Start all successfully compiled renderers
+    logger.info('Main', 'Starting all active renderers');
+    const startSuccess = await rendererManager.start();
+
+    if (!startSuccess) {
+      logger.warn('Main', 'Some renderers failed to start');
     }
 
-    // Compile audio if there are play statements
-    if (audioRenderer && env.playStatements && env.playStatements.length > 0) {
-      try {
-        await audioRenderer.compile(env.playStatements);
-        await audioRenderer.start();
-        logger.info('Main', 'Audio compilation and start completed');
-      } catch (error) {
-        logger.error('Main', 'Audio compilation failed', error);
-      }
-    }
-
-    // Update clock display with new renderer
+    // Update clock display with new renderers
     if (clockDisplay) {
-      clockDisplay.setRenderer(renderer);
+      const cpuRenderer = rendererManager.getRenderer('cpu');
+      const audioRenderer = rendererManager.getRenderer('audio');
+      clockDisplay.setRenderer(cpuRenderer);
       clockDisplay.setAudioRenderer(audioRenderer);
     }
-
-    renderer.start();
     logger.info('Main', 'Program execution completed successfully');
     
     // Refresh coordinate probe after rendering
@@ -455,19 +469,24 @@ function initDebugPanel() {
       });
 
       // Handle canvas tab switching specifically
-      if (targetTab === 'canvas' && renderer) {
+      if (targetTab === 'canvas' && rendererManager) {
+        const cpuRenderer = rendererManager.getRenderer('cpu');
+        const webglRenderer = rendererManager.getRenderer('webgl');
         console.log('Switching to canvas tab, renderer status:', {
-          hasRenderer: !!renderer,
-          rendererType: renderer.constructor.name,
-          isRunning: renderer.isRunning || 'unknown'
+          hasRendererManager: !!rendererManager,
+          cpuRenderer: cpuRenderer?.constructor?.name || 'none',
+          webglRenderer: webglRenderer?.constructor?.name || 'none',
+          activeRenderers: Array.from(rendererManager.activeRenderers || [])
         });
 
         setTimeout(() => {
           console.log('Attempting to restart renderer after tab switch');
           try {
             // Force renderer restart
-            if (renderer.stop) renderer.stop();
-            if (renderer.start) renderer.start();
+            if (rendererManager) {
+              rendererManager.stop();
+              setTimeout(() => rendererManager.start(), 10);
+            }
             console.log('Renderer restart completed');
           } catch (error) {
             console.error('Error restarting renderer:', error);

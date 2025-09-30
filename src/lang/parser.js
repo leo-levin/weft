@@ -1,6 +1,6 @@
 import {
   ASTNode, BinaryExpr, UnaryExpr, CallExpr, VarExpr, NumExpr, StrExpr,
-  MeExpr, MouseExpr, TupleExpr, IndexExpr, StrandAccessExpr, IfExpr,
+  MeExpr, MouseExpr, TupleExpr, IndexExpr, StrandAccessExpr, StrandRemapExpr, IfExpr,
   LetBinding, Assignment, NamedArg, OutputStatement, DisplayStmt, RenderStmt, PlayStmt, ComputeStmt,
   SpindleDef, InstanceBinding, Program
 } from '../ast/ast-node.js';
@@ -29,6 +29,7 @@ Weft {
 
   LetBinding = kw<"let"> ident sym<"="> Expr
   InstanceBinding = ident space* OutputSpec space* sym<"="> space* Expr  -- direct
+                  | ident sym<"@"> ident sym<"("> ListOf<Expr, ","> sym<")"> sym<"::"> ident OutputSpec -- strandRemap
                   | ident sym<"("> ListOf<Expr, ","> sym<")"> sym<"::"> ident OutputSpec -- call
                   | ident sym<"<"> digit+ sym<">"> sym<"("> ListOf<BundleOrExpr, ","> sym<")"> sym<"::"> ident OutputSpec -- multiCall
 
@@ -83,6 +84,7 @@ Weft {
   PrimaryExpr = sym<"("> Expr sym<")">                          -- paren
               | sym<"("> ListOf<Expr, ","> sym<")">             -- tuple
               | PrimaryExpr sym<"["> Expr sym<"]">              -- index
+              | ident sym<"@"> ident sym<"("> ListOf<Expr, ","> sym<")"> -- strandRemap
               | ident sym<"@"> ident                            -- strand
               | ident sym<"("> ListOf<Expr, ","> sym<")">       -- call
               | sym<"<"> ListOf<Expr, ","> sym<">">             -- bundle
@@ -269,7 +271,7 @@ const sem = g.createSemantics().addOperation('ast', {
 
     // Bindings
     LetBinding(_let, name, _eq, expr) {
-      return { type: 'Let', name: name.ast(), expr: expr.ast() };
+      return new LetBinding(name.ast(), expr.ast());
     },
 
     InstanceBinding_direct(name, _sp1, outputs, _sp2, _eq, _sp3, expr) {
@@ -279,6 +281,23 @@ const sem = g.createSemantics().addOperation('ast', {
         name: name.ast(),
         outs: outputs.ast(),
         expr: expr.ast()
+      };
+    },
+
+    InstanceBinding_strandRemap(base, _at, strand, _lp, coords, _rp, _dc, inst, outputs) {
+      // Parse as Direct statement with StrandRemap expression
+      const strandRemapExpr = {
+        type: 'StrandRemap',
+        base: base.ast(),
+        strand: strand.ast(),
+        coordinates: coords.ast()
+      };
+
+      return {
+        type: 'Direct',
+        name: inst.ast(),
+        outs: outputs.ast(),
+        expr: strandRemapExpr
       };
     },
 
@@ -353,12 +372,7 @@ const sem = g.createSemantics().addOperation('ast', {
 
     // Mutations
     Assignment(name, op, expr) {
-      return {
-        type: 'Assign',
-        name: name.ast(),
-        op: op.sourceString.trim(),
-        expr: expr.ast()
-      };
+      return new Assignment(name.ast(), op.sourceString.trim(), expr.ast());
     },
 
 
@@ -409,39 +423,39 @@ const sem = g.createSemantics().addOperation('ast', {
 
     // Expressions
     IfExpr(_if, cond, _then, t, _else, e) {
-      return { type: 'If', cond: cond.ast(), t: t.ast(), e: e.ast() };
+      return new IfExpr(cond.ast(), t.ast(), e.ast());
     },
 
     LogicalExpr_or(left, _op, right) {
-      return { type: 'Bin', op: 'OR', left: left.ast(), right: right.ast() };
+      return new BinaryExpr('OR', left.ast(), right.ast());
     },
 
     LogicalExpr_and(left, _op, right) {
-      return { type: 'Bin', op: 'AND', left: left.ast(), right: right.ast() };
+      return new BinaryExpr('AND', left.ast(), right.ast());
     },
 
     ComparisonExpr_compare(left, op, right) {
-      return { type: 'Bin', op: op.sourceString.trim(), left: left.ast(), right: right.ast() };
+      return new BinaryExpr(op.sourceString.trim(), left.ast(), right.ast());
     },
 
     AddExpr_addsub(left, op, right) {
-      return { type: 'Bin', op: op.sourceString.trim(), left: left.ast(), right: right.ast() };
+      return new BinaryExpr(op.sourceString.trim(), left.ast(), right.ast());
     },
 
     MulExpr_muldiv(left, op, right) {
-      return { type: 'Bin', op: op.sourceString.trim(), left: left.ast(), right: right.ast() };
+      return new BinaryExpr(op.sourceString.trim(), left.ast(), right.ast());
     },
 
     PowerExpr_power(left, _op, right) {
-      return { type: 'Bin', op: '^', left: left.ast(), right: right.ast() };
+      return new BinaryExpr('^', left.ast(), right.ast());
     },
 
     UnaryExpr_neg(_op, expr) {
-      return { type: 'Unary', op: '-', expr: expr.ast() };
+      return new UnaryExpr('-', expr.ast());
     },
 
     UnaryExpr_not(_op, expr) {
-      return { type: 'Unary', op: 'NOT', expr: expr.ast() };
+      return new UnaryExpr('NOT', expr.ast());
     },
 
     PrimaryExpr_paren(_lp, expr, _rp) {
@@ -450,15 +464,27 @@ const sem = g.createSemantics().addOperation('ast', {
 
     PrimaryExpr_tuple(_lp, items, _rp) {
       const list = items.ast();
-      return list.length === 1 ? list[0] : { type: 'Tuple', items: list };
+      return list.length === 1 ? list[0] : new TupleExpr(list);
     },
 
     PrimaryExpr_index(base, _lb, index, _rb) {
-      return { type: 'Index', base: base.ast(), index: index.ast() };
+      return new IndexExpr(base.ast(), index.ast());
+    },
+
+    PrimaryExpr_strandRemap(base, _at, strand, _lp, coords, _rp) {
+      return new StrandRemapExpr(base.ast(), strand.ast(), coords.ast());
     },
 
     PrimaryExpr_strand(base, _at, output) {
-      return { type: 'StrandAccess', base: base.ast(), out: output.ast() };
+      const baseAst = base.ast();
+      const outputAst = output.ast();
+
+      // Special case for me@field - create MeExpr instead of StrandAccess
+      if (baseAst.type === 'Var' && baseAst.name === 'me') {
+        return new MeExpr(outputAst);
+      }
+
+      return new StrandAccessExpr(baseAst, outputAst);
     },
 
     PrimaryExpr_call(func, _lp, args, _rp) {
@@ -476,7 +502,7 @@ const sem = g.createSemantics().addOperation('ast', {
         }
       }
 
-      return { type: 'Call', name: func.ast(), args: expandedArgs };
+      return new CallExpr(func.ast(), expandedArgs);
     },
 
     PrimaryExpr_bundle(_lt, items, _gt) {
@@ -485,11 +511,11 @@ const sem = g.createSemantics().addOperation('ast', {
 
 
     PrimaryExpr_mouse(_mouse, _at, field) {
-      return { type: 'Mouse', field: field.ast() };
+      return new MouseExpr(field.ast());
     },
 
     PrimaryExpr_var(name) {
-      return { type: 'Var', name: name.ast() };
+      return new VarExpr(name.ast());
     },
 
     // Bundle expressions
@@ -507,11 +533,11 @@ const sem = g.createSemantics().addOperation('ast', {
     },
 
     number(_digits, _space) {
-      return { type: 'Num', v: parseFloat(this.sourceString) };
+      return new NumExpr(parseFloat(this.sourceString));
     },
 
     string(_q1, chars, _q2, _space) {
-      return { type: 'Str', v: chars.sourceString };
+      return new StrExpr(chars.sourceString);
     },
 
     // Default iteration

@@ -1,0 +1,15 @@
+// Rotation test using coordinate remapping
+// Rotates noise pattern using trigonometry
+
+let angle = me@time * 0.5
+
+// Original noise pattern
+noise(me@x*5, me@y*5) :: original<val>
+
+// Rotated coordinates: standard 2D rotation matrix
+original@val(
+  cos(angle) * me@x - sin(angle) * me@y,
+  sin(angle) * me@x + cos(angle) * me@y
+) :: rotated<val>
+
+display(rotated@val, rotated@val * 0.5, original@val * 0.5)

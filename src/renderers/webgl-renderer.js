@@ -1,32 +1,141 @@
 // WebGL Renderer with WEFT-to-GLSL compiler for GPU acceleration
-import { logger } from '../runtime/runtime.js';
+import { logger } from '../utils/logger.js';
+import { AbstractRenderer } from './abstract-renderer.js';
+import { CrossContextManager, MediaManager } from './shared-utils.js';
 
-class WebGLRenderer {
+class WebGLRenderer extends AbstractRenderer {
   constructor(canvas, env) {
+    super(env, 'WebGL');
+
+    // WebGL-specific properties
     this.canvas = canvas;
-    this.env = env;
     this.gl = null;
     this.program = null;
     this.uniforms = {};
     this.textures = new Map();
-    this.textureUnits = [];
     this.textureCounter = 0;
-    this.maxTextureUnits = 8; // Conservative limit for compatibility
+    this.maxTextureUnits = 8;
     this.availableTextureUnits = [];
     this.frameBuffer = null;
-    this.running = false;
-    this.frames = 0;
-    this.lastTime = performance.now();
-    this.fps = 0;
-    this.lastFrameTime = performance.now();
-    this.frameTimeAccumulator = 0;
-    this.lastTargetFps = env.targetFps;
 
-    this.initWebGL();
+    // Set supported routes
+    this.supportedRoutes.add('gpu');
+    this.supportedRoutes.add('cpu'); // Can also handle CPU routes
+
+    // Initialize shared utilities
+    this.crossContextManager = new CrossContextManager(env, 'WebGL');
+    this.mediaManager = new MediaManager(env, 'WebGL');
+
+    // Vertex buffer for full-screen quad
+    this.vertexBuffer = null;
+
+    // Delay WebGL context initialization to avoid conflicts with CPU renderer
+    // this.initWebGL(); // Moved to initialize() method
   }
 
+  // ===== Implementation of abstract methods =====
+
+  /**
+   * Initialize WebGL renderer resources
+   */
+  async initialize() {
+    // Initialize WebGL context now (delayed from constructor)
+    if (!this.initWebGL()) {
+      throw new Error('Failed to initialize WebGL context');
+    }
+
+    if (!this.gl) {
+      throw new Error('WebGL context not available');
+    }
+    this.setupQuadGeometry();
+    logger.info('WebGL', 'WebGL Renderer initialized successfully');
+    return true;
+  }
+
+  /**
+   * Compile AST for WebGL rendering
+   */
+  async compile(ast) {
+    try {
+      console.log('🔥 WebGL compile starting...');
+
+      // Ensure WebGL context is initialized before compilation
+      if (!this.gl) {
+        console.log('🔥 WebGL context not available, initializing...');
+        if (!this.initWebGL()) {
+          throw new Error('Failed to initialize WebGL context during compilation');
+        }
+        this.setupQuadGeometry();
+      }
+
+      this.filterStatements(ast);
+      await this.mediaManager.processLoadStatements(this.filteredStatements);
+
+      // Store AST for shader generation
+      this.env.currentProgram = ast;
+
+      // Collect cross-context parameters
+      const usedVars = this.findUsedVariables(this.filteredStatements);
+      this.crossContextManager.collectCrossContextParams(ast, usedVars);
+
+      console.log('🔥 About to compile shaders...');
+      // Compile display statements into shaders
+      const success = this.compileDisplayShaders(ast);
+      if (!success) {
+        console.error('❌ Shader compilation returned false');
+        throw new Error('Shader compilation failed');
+      }
+      logger.info('WebGL', 'WebGL compilation completed successfully');
+      return true;
+    } catch (error) {
+      logger.error('WebGL', 'WebGL compilation failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Render a single frame using WebGL
+   */
+  render() {
+    if (!this.program) {
+      logger.warn('WebGL', 'No shader program available for rendering');
+      return;
+    }
+
+    this.updateCanvasSize();
+    this.updateUniforms();
+    this.drawFrame();
+  }
+
+  /**
+   * Clean up WebGL renderer resources
+   */
+  cleanup() {
+    if (this.program) {
+      this.gl.deleteProgram(this.program);
+      this.program = null;
+    }
+    if (this.vertexBuffer) {
+      this.gl.deleteBuffer(this.vertexBuffer);
+      this.vertexBuffer = null;
+    }
+    // Cleanup textures
+    for (const [, textureInfo] of this.textures) {
+      if (textureInfo.texture) {
+        this.gl.deleteTexture(textureInfo.texture);
+      }
+    }
+    this.textures.clear();
+    logger.debug('WebGL', 'WebGL renderer cleanup complete');
+  }
+
+  // ===== WebGL-specific implementation methods =====
+
+  /**
+   * Initialize WebGL context and check capabilities
+   */
   initWebGL() {
-    // Try to get WebGL context, but preserve 2D context capability
+    // Try to get WebGL context
     this.gl = this.canvas.getContext('webgl2', { preserveDrawingBuffer: true }) ||
               this.canvas.getContext('webgl', { preserveDrawingBuffer: true });
     if (!this.gl) {
@@ -49,7 +158,14 @@ class WebGLRenderer {
       this.availableTextureUnits.push(i);
     }
 
-    // Setup basic quad geometry (two triangles forming a full-screen quad)
+    logger.info('WebGL', 'WebGL context initialized successfully');
+    return true;
+  }
+
+  /**
+   * Setup full-screen quad geometry
+   */
+  setupQuadGeometry() {
     const vertices = new Float32Array([
       -1, -1,   // bottom-left
        1, -1,   // bottom-right
@@ -63,13 +179,319 @@ class WebGLRenderer {
     this.gl.bindBuffer(this.gl.ARRAY_BUFFER, buffer);
     this.gl.bufferData(this.gl.ARRAY_BUFFER, vertices, this.gl.STATIC_DRAW);
     this.vertexBuffer = buffer;
+  }
 
+  /**
+   * Compile display statements into shaders
+   */
+  compileDisplayShaders(ast) {
+    // Find display statements
+    const displayStmts = [];
+    const traverse = (node) => {
+      if (!node) return;
+      if (node.type === 'DisplayStmt' || node.type === 'RenderStmt') {
+        displayStmts.push(node);
+      }
+      if (node.statements) node.statements.forEach(traverse);
+      if (node.args) node.args.forEach(traverse);
+    };
+
+    traverse(ast);
+
+    if (displayStmts.length === 0) {
+      console.error('❌ No display statements found in AST');
+      console.log('AST statements:', ast.statements.map(s => s.type));
+      logger.debug('WebGL', 'No display statements found');
+      return false;
+    }
+    console.log('✅ Found display statements:', displayStmts.length);
+
+    // Store the display statement and full AST for shader generation
+    this.displayStatement = displayStmts[0];
+    this.currentAST = ast;
+
+    // Generate and compile shaders
+    return this.compileShaders();
+  }
+
+  /**
+   * Compile shaders and create program
+   */
+  compileShaders() {
+    const vertexShader = `
+      attribute vec2 a_position;
+      varying vec2 v_texCoord;
+
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+        v_texCoord = (a_position + 1.0) * 0.5;
+        v_texCoord.y = 1.0 - v_texCoord.y;
+      }
+    `;
+
+    console.log('🔥 Generating fragment shader...');
+    let fragmentShader;
+    try {
+      fragmentShader = this.generateFragmentShader();
+      console.log('🔥 Fragment shader generation completed, checking result...');
+    } catch (error) {
+      console.error('❌ Fragment shader generation threw error:', error);
+      logger.error('WebGL', 'Fragment shader generation threw error:', error);
+      return false;
+    }
+
+    if (!fragmentShader) {
+      console.error('❌ Fragment shader generation returned null');
+      logger.error('WebGL', 'Failed to generate fragment shader');
+      return false;
+    }
+    logger.debug('WebGL', `Fragment shader generated: ${fragmentShader.length} characters`);
+
+    this.program = this.createProgram(vertexShader, fragmentShader);
+    if (!this.program) {
+      return false;
+    }
+
+    this.setupProgram();
     return true;
   }
+
+  /**
+   * Setup shader program attributes and uniforms
+   */
+  setupProgram() {
+    const gl = this.gl;
+    gl.useProgram(this.program);
+
+    // Setup attributes
+    const positionLoc = gl.getAttribLocation(this.program, 'a_position');
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+    gl.enableVertexAttribArray(positionLoc);
+    gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+
+    // Cache uniform locations
+    this.cacheUniformLocations();
+  }
+
+  /**
+   * Normalize a coordinate expression for texture sampling
+   * @param {string} coord - The coordinate expression
+   * @returns {string} - Normalized coordinate expression
+   */
+  normalizeTextureCoordinate(coord) {
+    // v_texCoord components are already normalized [0,1]
+    if (coord === 'v_texCoord.x' || coord === 'v_texCoord.y') {
+      return coord;
+    }
+
+    // Time-based coordinates don't need spatial normalization but may need wrapping
+    if (coord.includes('u_time') || coord.includes('u_frame') ||
+        coord.includes('u_abstime') || coord.includes('u_absframe')) {
+      // For time coordinates, wrap to [0,1] range for texture sampling
+      return `mod(${coord}, 1.0)`;
+    }
+
+    // Check if it's already a normalized expression (contains division or mod)
+    if (coord.includes('/') || coord.includes('mod(')) {
+      return coord;
+    }
+
+    // For pixel coordinates, normalize by resolution
+    if (coord.includes('u_resolution') || coord.match(/^\d+\.?\d*$/)) {
+      return `(${coord} / u_resolution.x)`; // Assume x for now, could be improved
+    }
+
+    // Default: assume it's already normalized or handle as-is
+    return coord;
+  }
+
+  /**
+   * Cache uniform locations for better performance
+   */
+  cacheUniformLocations() {
+    const gl = this.gl;
+    this.uniforms = {
+      resolution: gl.getUniformLocation(this.program, 'u_resolution'),
+      time: gl.getUniformLocation(this.program, 'u_time'),
+      frame: gl.getUniformLocation(this.program, 'u_frame'),
+      abstime: gl.getUniformLocation(this.program, 'u_abstime'),
+      absframe: gl.getUniformLocation(this.program, 'u_absframe'),
+      fps: gl.getUniformLocation(this.program, 'u_fps'),
+      loop: gl.getUniformLocation(this.program, 'u_loop'),
+      bpm: gl.getUniformLocation(this.program, 'u_bpm'),
+      timesig_num: gl.getUniformLocation(this.program, 'u_timesig_num'),
+      timesig_den: gl.getUniformLocation(this.program, 'u_timesig_den'),
+      beat: gl.getUniformLocation(this.program, 'u_beat'),
+      measure: gl.getUniformLocation(this.program, 'u_measure'),
+      mouse: gl.getUniformLocation(this.program, 'u_mouse')
+    };
+
+    // Cache texture uniform locations
+    for (const [, textureInfo] of this.textures) {
+      this.uniforms[textureInfo.uniformName] = gl.getUniformLocation(this.program, textureInfo.uniformName);
+      if (this.uniforms[textureInfo.uniformName]) {
+        gl.uniform1i(this.uniforms[textureInfo.uniformName], textureInfo.unit);
+      }
+    }
+
+    // Cache parameter uniform locations
+    if (this.env.parameters) {
+      for (const [paramName] of this.env.parameters) {
+        const uniformName = `u_param_${paramName}`;
+        this.uniforms[uniformName] = gl.getUniformLocation(this.program, uniformName);
+      }
+    }
+  }
+
+  /**
+   * Update canvas size to match environment resolution
+   */
+  updateCanvasSize() {
+    const width = this.env.resW;
+    const height = this.env.resH;
+
+    if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+      logger.debug('WebGL', `Canvas resized to: ${width}×${height}`);
+      this.updateResolutionDisplay();
+    }
+
+    this.gl.viewport(0, 0, width, height);
+  }
+
+  /**
+   * Update shader uniforms
+   */
+  updateUniforms() {
+    const gl = this.gl;
+    const env = this.env;
+
+    // Set resolution
+    gl.uniform2f(this.uniforms.resolution, env.resW, env.resH);
+
+    // Time uniforms
+    const absTime = (Date.now() - env.startTime) / 1000;
+    const beatsPerSecond = env.bpm / 60;
+    gl.uniform1f(this.uniforms.time, (env.frame % env.loop) / env.targetFps);
+    gl.uniform1f(this.uniforms.frame, env.frame % env.loop);
+    gl.uniform1f(this.uniforms.abstime, absTime);
+    gl.uniform1f(this.uniforms.absframe, env.frame);
+    gl.uniform1f(this.uniforms.fps, env.targetFps);
+    gl.uniform1f(this.uniforms.loop, env.loop);
+    gl.uniform1f(this.uniforms.bpm, env.bpm);
+    gl.uniform1f(this.uniforms.timesig_num, env.timesig_num);
+    gl.uniform1f(this.uniforms.timesig_den, env.timesig_den);
+    gl.uniform1f(this.uniforms.beat, Math.floor(absTime * beatsPerSecond) % env.timesig_num);
+    gl.uniform1f(this.uniforms.measure, Math.floor(absTime * beatsPerSecond / env.timesig_num));
+
+    gl.uniform2f(this.uniforms.mouse, env.mouse.x, env.mouse.y);
+
+    // Set parameter uniforms
+    if (env.parameters) {
+      for (const [paramName, paramStrand] of env.parameters) {
+        const uniformName = `u_param_${paramName}`;
+        if (this.uniforms[uniformName]) {
+          gl.uniform1f(this.uniforms[uniformName], paramStrand.value);
+        }
+      }
+    }
+  }
+
+  /**
+   * Draw the frame
+   */
+  drawFrame() {
+    const gl = this.gl;
+
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    this.env.frame++;
+  }
+
+  /**
+   * Find variables used in filtered statements
+   */
+  findUsedVariables(statements) {
+    const usedVars = new Set();
+
+    const traverse = (node) => {
+      if (!node) return;
+
+      if (node.type === 'Var') {
+        usedVars.add(node.name);
+      } else if (node.type === 'StrandAccess') {
+        const baseName = node.base?.name || node.base;
+        if (baseName && baseName !== 'me') {
+          usedVars.add(baseName);
+        }
+      }
+
+      // Traverse children
+      if (node.args) node.args.forEach(traverse);
+      if (node.expr) traverse(node.expr);
+      if (node.left) traverse(node.left);
+      if (node.right) traverse(node.right);
+    };
+
+    statements.forEach(traverse);
+    return usedVars;
+  }
+
+  /**
+   * Handle parameter updates
+   */
+  onParameterUpdate(paramName, value) {
+    logger.debug('WebGL', `Parameter updated: ${paramName} = ${value}`);
+  }
+
+  /**
+   * Get performance label
+   */
+  getPerformanceLabel() {
+    return 'GPU Accelerated';
+  }
+
+  /**
+   * Sample pixel value at normalized coordinates [0,1]
+   * @param {number} x - Normalized X coordinate (0-1)
+   * @param {number} y - Normalized Y coordinate (0-1)
+   * @param {number} channel - Channel index (0=r, 1=g, 2=b, 3=a)
+   * @returns {number} Normalized pixel value (0-1)
+   */
+  samplePixel(x, y, channel = 0) {
+    if (!this.gl) return 0;
+
+    // Clamp and normalize coordinates
+    x = Math.max(0, Math.min(1, x));
+    y = Math.max(0, Math.min(1, y));
+
+    // Convert to pixel coordinates
+    const px = Math.floor(x * this.env.resW);
+    const py = Math.floor(y * this.env.resH);
+
+    // Read pixel from framebuffer (WebGL reads from bottom-left, flip Y)
+    const glY = this.env.resH - 1 - py;
+    const pixels = new Uint8Array(4);
+    this.gl.readPixels(px, glY, 1, 1, this.gl.RGBA, this.gl.UNSIGNED_BYTE, pixels);
+
+    // Return normalized value [0,1]
+    return pixels[channel] / 255.0;
+  }
+
+  // ===== Keep existing WebGL methods =====
 
   loadTexture(url, instName) {
     if (this.textures.has(instName)) {
       return this.textures.get(instName);
+    }
+
+    if (!this.gl) {
+      console.error('❌ WebGL context not available for texture loading');
+      logger.error('WebGL', 'Cannot load texture - WebGL context is null', { url, instName });
+      return null;
     }
 
     const gl = this.gl;
@@ -119,7 +541,9 @@ class WebGLRenderer {
 
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
       const info = gl.getShaderInfoLog(shader);
-      console.error('Shader compilation error:', info);
+      console.error('❌ WebGL Shader compilation error:', info);
+      console.error('❌ Shader source:');
+      console.error(source.split('\n').map((line, i) => `${i+1}: ${line}`).join('\n'));
       logger.error('WebGL', 'Shader compilation failed', {
         type: type === gl.VERTEX_SHADER ? 'vertex' : 'fragment',
         error: info,
@@ -169,6 +593,26 @@ class WebGLRenderer {
         return numValue.toString() + (Number.isInteger(numValue) ? '.0' : '');
 
 
+      case 'Me':
+      case 'MeExpr':
+        const meField = node.field;
+        switch (meField) {
+          case 'x': return 'v_texCoord.x';
+          case 'y': return 'v_texCoord.y';
+          case 'time': return 'u_time';
+          case 'frame': return 'u_frame';
+          case 'abstime': return 'u_abstime';
+          case 'absframe': return 'u_absframe';
+          case 'width': return 'u_resolution.x';
+          case 'height': return 'u_resolution.y';
+          case 'fps': return 'u_fps';
+          case 'loop': return 'u_loop';
+          case 'bpm': return 'u_bpm';
+          case 'beat': return 'u_beat';
+          case 'measure': return 'u_measure';
+          default: return '0.0';
+        }
+
       case 'Mouse':
       case 'MouseExpr':
         const mouseField = node.field;
@@ -203,6 +647,10 @@ class WebGLRenderer {
           case '>': return `(${left} > ${right} ? 1.0 : 0.0)`;
           case '<=': return `(${left} <= ${right} ? 1.0 : 0.0)`;
           case '>=': return `(${left} >= ${right} ? 1.0 : 0.0)`;
+          case '<<': return `(${left} < ${right} ? 1.0 : 0.0)`;
+          case '>>': return `(${left} > ${right} ? 1.0 : 0.0)`;
+          case '<<=': return `(${left} <= ${right} ? 1.0 : 0.0)`;
+          case '>>=': return `(${left} >= ${right} ? 1.0 : 0.0)`;
           case 'AND': return `(${left} > 0.0 && ${right} > 0.0 ? 1.0 : 0.0)`;
           case 'OR': return `(${left} > 0.0 || ${right} > 0.0 ? 1.0 : 0.0)`;
           default: return '0.0';
@@ -211,14 +659,9 @@ class WebGLRenderer {
 
       case 'If':
       case 'IfExpr': {
-        // Handle both parser formats: node.condition vs node.cond
-        const condition = node.condition || node.cond;
-        const thenBranch = node.thenExpr || node.t;
-        const elseBranch = node.elseExpr || node.e;
-
-        const cond = this.compileToGLSL(condition, env, instanceOutputs, localScope);
-        const thenExpr = this.compileToGLSL(thenBranch, env, instanceOutputs, localScope);
-        const elseExpr = this.compileToGLSL(elseBranch, env, instanceOutputs, localScope);
+        const cond = this.compileToGLSL(node.condition, env, instanceOutputs, localScope);
+        const thenExpr = this.compileToGLSL(node.thenExpr, env, instanceOutputs, localScope);
+        const elseExpr = this.compileToGLSL(node.elseExpr, env, instanceOutputs, localScope);
         return `(${cond} > 0.0 ? ${thenExpr} : ${elseExpr})`;
       }
 
@@ -393,8 +836,8 @@ class WebGLRenderer {
         // Special handling for me@ outputs - map to uniforms
         if (baseName === 'me') {
           switch(outputName) {
-            case 'x': return 'uv.x';
-            case 'y': return 'uv.y';
+            case 'x': return 'v_texCoord.x';
+            case 'y': return 'v_texCoord.y';
             case 'abstime': return 'u_abstime';
             case 'absframe': return 'u_absframe';
             case 'time': return 'u_time';
@@ -437,6 +880,11 @@ class WebGLRenderer {
         }
 
         return '0.0';
+      }
+
+      case 'StrandRemap':
+      case 'StrandRemapExpr': {
+        return this.compileStrandRemapToGLSL(node, env, instanceOutputs, localScope);
       }
 
       case 'Str':
@@ -520,25 +968,21 @@ class WebGLRenderer {
   }
 
   generateFragmentShader() {
-    // Parse the full program and compile to GLSL
-const program = this.env.currentProgram;
+    console.log('🔥 generateFragmentShader called');
 
-if (!program) {
+    // Use the stored display statement from compilation
+    if (!this.displayStatement || !this.currentAST) {
+      logger.error('WebGL', 'No display statement or AST available', {
+        hasDisplayStatement: !!this.displayStatement,
+        hasCurrentAST: !!this.currentAST
+      });
       return null;
     }
 
-logger.info('WebGL', `Compiling program with ${program.statements.length} statements`, program);
+    const program = this.currentAST;
+    logger.info('WebGL', `Generating shader for display statement with ${program.statements.length} total statements`);
 
-// Look for render statements first, then fall back to display statements
-    let renderStmt = null;
-    for (const stmt of program.statements) {
-      if (stmt.type === 'RenderStmt') {
-        renderStmt = stmt;
-        break;
-      }
-    }
-
-const displayStmt = renderStmt || this.env.displayAst;
+    const displayStmt = this.displayStatement;
     if (!displayStmt) {
       return null;
     }
@@ -548,23 +992,39 @@ const displayStmt = renderStmt || this.env.displayAst;
     // Collect all instances and their definitions
     const instanceOutputs = {};
     const glslCode = [];
+    console.log('🔥 Starting shader generation setup...');
 
     // Collect and generate GLSL functions for user-defined spindles
     const spindleFunctions = [];
-    for (const [spindleName, spindleDef] of this.env.spindles) {
-      if (this.canCompileSpindleToGLSL(spindleDef)) {
-        logger.info('WebGL', `Generating GLSL function for spindle: ${spindleName}`);
-        const glslFunction = this.generateSpindleGLSL(spindleDef);
-        spindleFunctions.push(glslFunction);
-      } else {
-        logger.debug('WebGL', `Spindle '${spindleName}' cannot be compiled to GLSL`);
+    try {
+      for (const [spindleName, spindleDef] of this.env.spindles) {
+        if (this.canCompileSpindleToGLSL(spindleDef)) {
+          logger.info('WebGL', `Generating GLSL function for spindle: ${spindleName}`);
+          const glslFunction = this.generateSpindleGLSL(spindleDef);
+          spindleFunctions.push(glslFunction);
+        } else {
+          logger.debug('WebGL', `Spindle '${spindleName}' cannot be compiled to GLSL`);
+        }
       }
+      console.log('🔥 Spindle functions processed, moving to statement processing...');
+    } catch (error) {
+      console.error('❌ Error in spindle processing:', error);
+      throw error;
     }
 
     // Process all statements in the program
     const globalScope = {}; // Track variables defined at global scope
 
-    for (const stmt of program.statements) {
+    try {
+      console.log('🔥 Starting statement processing...');
+      for (const stmt of program.statements) {
+        console.log('🔥 Processing statement:', stmt.type);
+      // Skip environment parameter updates - handled by runtime
+      if (stmt.type === 'Direct' && stmt.name === 'me') {
+        logger.debug('WebGL', 'Skipping me parameter update in shader');
+        continue;
+      }
+
       // Handle Let bindings
       if (stmt.type === 'Let' || stmt.type === 'LetBinding') {
         const varName = stmt.name;
@@ -609,24 +1069,29 @@ const displayStmt = renderStmt || this.env.displayAst;
       else if (stmt.type === 'Direct') {
         logger.debug('WebGL', `Processing Direct: ${stmt.name}`, { outputs: stmt.outs });
 
-        for (let i = 0; i < stmt.outs.length; i++) {
-          const outputName = stmt.outs[i];
-          const varName = `${stmt.name}_${outputName}`;
-          const glslExpr = this.compileToGLSL(stmt.expr, this.env, instanceOutputs, globalScope);
+        // Special handling for StrandRemap expressions
+        if (stmt.expr && stmt.expr.type === 'StrandRemap') {
+          this.compileStrandRemapDirect(stmt, glslCode, instanceOutputs, globalScope);
+        } else {
+          for (let i = 0; i < stmt.outs.length; i++) {
+            const outputName = stmt.outs[i];
+            const varName = `${stmt.name}_${outputName}`;
+            const glslExpr = this.compileToGLSL(stmt.expr, this.env, instanceOutputs, globalScope);
 
-          if (stmt.outs.length === 1) {
-            glslCode.push(`  float ${varName} = ${glslExpr};`);
-            instanceOutputs[`${stmt.name}@${outputName}`] = varName;
-            globalScope[varName] = varName;
-            instanceOutputs[stmt.name] = varName; // Also allow direct access
-          } else {
-            // Handle tuple outputs - need better approach for this
-            glslCode.push(`  float ${varName} = ${glslExpr};`);
-            instanceOutputs[`${stmt.name}@${outputName}`] = varName;
-            globalScope[varName] = varName;
+            if (stmt.outs.length === 1) {
+              glslCode.push(`  float ${varName} = ${glslExpr};`);
+              instanceOutputs[`${stmt.name}@${outputName}`] = varName;
+              globalScope[varName] = varName;
+              instanceOutputs[stmt.name] = varName; // Also allow direct access
+            } else {
+              // Handle tuple outputs - need better approach for this
+              glslCode.push(`  float ${varName} = ${glslExpr};`);
+              instanceOutputs[`${stmt.name}@${outputName}`] = varName;
+              globalScope[varName] = varName;
+            }
+
+            logger.debug('WebGL', `Direct output: ${varName} = ${glslExpr}`);
           }
-
-          logger.debug('WebGL', `Direct output: ${varName} = ${glslExpr}`);
         }
       }
 
@@ -635,6 +1100,10 @@ const displayStmt = renderStmt || this.env.displayAst;
         const imagePath = stmt.args[0] && stmt.args[0].type === 'Str' ? stmt.args[0].v : null;
         if (imagePath) {
           const textureInfo = this.loadTexture(imagePath, stmt.inst);
+          if (!textureInfo) {
+            logger.warn('WebGL', `Failed to load texture, skipping: ${stmt.inst}`, { path: imagePath });
+            continue; // Skip this load statement if texture loading failed
+          }
           logger.info('WebGL', `Processing load instance: ${stmt.inst}`, { path: imagePath, outputs: stmt.outs });
 
           for (const output of stmt.outs) {
@@ -653,7 +1122,7 @@ const displayStmt = renderStmt || this.env.displayAst;
               component = ['.r', '.g', '.b', '.a'][Math.min(outputIndex, 3)];
             }
 
-            glslCode.push(`  float ${varName} = texture2D(${textureInfo.uniformName}, uv)${component};`);
+            glslCode.push(`  float ${varName} = texture2D(${textureInfo.uniformName}, v_texCoord)${component};`);
             instanceOutputs[`${stmt.inst}@${outName}`] = varName;
             logger.debug('WebGL', `Texture output: ${varName} → ${component}`);
           }
@@ -664,6 +1133,10 @@ const displayStmt = renderStmt || this.env.displayAst;
       if (stmt.type === 'CallInstance' && stmt.callee !== 'load') {
         this.compileSpindleToGLSL(stmt, glslCode, instanceOutputs);
       }
+    }
+    } catch (error) {
+      console.error('❌ Error in statement processing:', error);
+      throw error;
     }
 
     // Compile render/display statement
@@ -739,6 +1212,14 @@ const displayStmt = renderStmt || this.env.displayAst;
         parameterUniforms.push(`uniform float u_param_${paramName};`);
       }
     }
+
+    console.log('🔥 About to return fragment shader with', {
+      glslCodeLines: glslCode.length,
+      textureUniforms: textureUniforms.length,
+      parameterUniforms: parameterUniforms.length,
+      spindleFunctions: spindleFunctions.length,
+      rCode, gCode, bCode
+    });
 
     return `
       precision highp float;
@@ -879,9 +1360,9 @@ ${glslCode.join('\n')}
                this.canCompileExpressionToGLSL(expr.right);
 
       case 'If':
-        return this.canCompileExpressionToGLSL(expr.cond) &&
-               this.canCompileExpressionToGLSL(expr.t) &&
-               this.canCompileExpressionToGLSL(expr.e);
+        return this.canCompileExpressionToGLSL(expr.condition) &&
+               this.canCompileExpressionToGLSL(expr.thenExpr) &&
+               this.canCompileExpressionToGLSL(expr.elseExpr);
 
       case 'Call':
         // Only allow built-in mathematical functions
@@ -1194,75 +1675,7 @@ ${glslCode.join('\n')}
     return false;
   }
 
-  compile() {
-    const vertexShader = `
-      attribute vec2 a_position;
-      varying vec2 v_texCoord;
-
-      void main() {
-        gl_Position = vec4(a_position, 0.0, 1.0);
-        v_texCoord = (a_position + 1.0) * 0.5;
-        v_texCoord.y = 1.0 - v_texCoord.y;
-      }
-    `;
-
-    const fragmentShader = this.generateFragmentShader();
-    if (!fragmentShader) {
-      console.error('Failed to generate fragment shader');
-      return false;
-    }
-
-    console.log('Generated GLSL:', fragmentShader);
-    logger.info('WebGL', 'Fragment shader generated successfully', { length: fragmentShader.length });
-
-    this.program = this.createProgram(vertexShader, fragmentShader);
-    if (!this.program) return false;
-
-    const gl = this.gl;
-    gl.useProgram(this.program);
-
-    // Setup attributes
-    const positionLoc = gl.getAttribLocation(this.program, 'a_position');
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-    gl.enableVertexAttribArray(positionLoc);
-    gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
-
-    // Cache uniform locations
-    this.uniforms = {
-      resolution: gl.getUniformLocation(this.program, 'u_resolution'),
-      time: gl.getUniformLocation(this.program, 'u_time'),
-      frame: gl.getUniformLocation(this.program, 'u_frame'),
-      abstime: gl.getUniformLocation(this.program, 'u_abstime'),
-      absframe: gl.getUniformLocation(this.program, 'u_absframe'),
-      fps: gl.getUniformLocation(this.program, 'u_fps'),
-      loop: gl.getUniformLocation(this.program, 'u_loop'),
-      bpm: gl.getUniformLocation(this.program, 'u_bpm'),
-      timesig_num: gl.getUniformLocation(this.program, 'u_timesig_num'),
-      timesig_den: gl.getUniformLocation(this.program, 'u_timesig_den'),
-      beat: gl.getUniformLocation(this.program, 'u_beat'),
-      measure: gl.getUniformLocation(this.program, 'u_measure'),
-      mouse: gl.getUniformLocation(this.program, 'u_mouse')
-    };
-
-    // Cache texture uniform locations and bind texture units
-    for (const [, textureInfo] of this.textures) {
-      this.uniforms[textureInfo.uniformName] = gl.getUniformLocation(this.program, textureInfo.uniformName);
-      if (this.uniforms[textureInfo.uniformName]) {
-        gl.uniform1i(this.uniforms[textureInfo.uniformName], textureInfo.unit);
-      }
-    }
-
-    // Cache parameter uniform locations
-    if (this.env.parameters) {
-      for (const [paramName, paramStrand] of this.env.parameters) {
-        const uniformName = `u_param_${paramName}`;
-        this.uniforms[uniformName] = gl.getUniformLocation(this.program, uniformName);
-        console.log(`🎮 Cached parameter uniform: ${uniformName}`);
-      }
-    }
-
-    return true;
-  }
+  // Duplicate method removed - use async compile(ast) instead
 
   render() {
     if (!this.program) return;
@@ -1371,6 +1784,121 @@ ${glslCode.join('\n')}
     this.lastFrameTime = now;
     requestAnimationFrame(() => this.loop());
   }
-}
 
+  /**
+   * Compile StrandRemap Direct statement
+   * @param {Object} stmt - Direct statement with StrandRemap expression
+   * @param {Array} glslCode - GLSL code array to append to
+   * @param {Object} instanceOutputs - Available instance outputs
+   * @param {Object} globalScope - Global scope for variables
+   */
+  compileStrandRemapDirect(stmt, glslCode, instanceOutputs, globalScope) {
+    const remapExpr = stmt.expr;
+    const baseName = remapExpr.base?.name || remapExpr.base;
+    const strandName = remapExpr.strand?.name || remapExpr.strand;
+    const baseKey = `${baseName}@${strandName}`;
+
+    logger.debug('WebGL', `Processing StrandRemap Direct: ${stmt.name} from ${baseKey}`);
+
+    // Compile coordinate expressions
+    const coords = remapExpr.coordinates.map(coord => this.compileToGLSL(coord, this.env, instanceOutputs, globalScope));
+
+    for (let i = 0; i < stmt.outs.length; i++) {
+      const outputName = stmt.outs[i];
+      const varName = `${stmt.name}_${outputName}`;
+
+      // Check if source is a texture
+      const textureInfo = this.textures.get(baseName);
+      if (textureInfo) {
+        // Generate texture sampling with remapped coordinates
+        const remappedX = coords[0] || 'uv.x';
+        const remappedY = coords[1] || 'uv.y';
+
+        // Map output to texture component
+        let component = '.r';
+        if (strandName === 'r' || strandName === 'red') component = '.r';
+        else if (strandName === 'g' || strandName === 'green') component = '.g';
+        else if (strandName === 'b' || strandName === 'blue') component = '.b';
+        else if (strandName === 'a' || strandName === 'alpha') component = '.a';
+
+        // Smart coordinate normalization for texture sampling
+        const normalizedX = this.normalizeTextureCoordinate(remappedX);
+        const normalizedY = this.normalizeTextureCoordinate(remappedY);
+        glslCode.push(`  float ${varName} = texture2D(${textureInfo.uniformName}, vec2(${normalizedX}, ${normalizedY}))${component};`);
+        logger.debug('WebGL', `StrandRemap texture: ${varName} = texture2D(..., vec2(${remappedX}, ${remappedY}))${component}`);
+      } else {
+        // Check if source is already a computed variable
+        const sourceVar = instanceOutputs[baseKey];
+        if (sourceVar) {
+          // For computed variables, we can't easily remap coordinates in GLSL
+          // Fall back to using the source directly for now
+          glslCode.push(`  float ${varName} = ${sourceVar};`);
+          logger.warn('WebGL', `StrandRemap fallback for computed variable: ${varName} = ${sourceVar}`);
+        } else {
+          // No source found, use default
+          glslCode.push(`  float ${varName} = 0.0;`);
+          logger.warn('WebGL', `StrandRemap source not found: ${baseKey}, defaulting to 0.0`);
+        }
+      }
+
+      instanceOutputs[`${stmt.name}@${outputName}`] = varName;
+      globalScope[varName] = varName;
+      if (stmt.outs.length === 1) {
+        instanceOutputs[stmt.name] = varName; // Also allow direct access
+      }
+    }
+  }
+
+  /**
+   * Compile StrandRemap expression to GLSL
+   * @param {Object} node - StrandRemap AST node
+   * @param {Object} env - Environment
+   * @param {Object} instanceOutputs - Available instance outputs
+   * @param {Object} localScope - Local scope for variables
+   * @returns {string} GLSL code for strand remapping
+   */
+  compileStrandRemapToGLSL(node, env, instanceOutputs, localScope) {
+    const baseName = node.base?.name || node.base;
+    const strandName = node.strand?.name || node.strand;
+    const baseKey = `${baseName}@${strandName}`;
+
+    // Compile coordinate expressions
+    const coords = node.coordinates.map(coord => this.compileToGLSL(coord, env, instanceOutputs, localScope));
+    const remappedX = coords[0] || 'v_texCoord.x';
+    const remappedY = coords[1] || 'v_texCoord.y';
+
+    // First check if source is a texture
+    const textureInfo = this.textures.get(baseName);
+    if (textureInfo) {
+      // Map strand name to texture component
+      let component = '.r';
+      if (strandName === 'r' || strandName === 'red') component = '.r';
+      else if (strandName === 'g' || strandName === 'green') component = '.g';
+      else if (strandName === 'b' || strandName === 'blue') component = '.b';
+      else if (strandName === 'a' || strandName === 'alpha') component = '.a';
+
+      // Smart coordinate normalization for texture sampling
+      const normalizedX = this.normalizeTextureCoordinate(remappedX);
+      const normalizedY = this.normalizeTextureCoordinate(remappedY);
+      return `texture2D(${textureInfo.uniformName}, vec2(${normalizedX}, ${normalizedY}))${component}`;
+    }
+
+    // Check for computed source variable
+    const sourceVar = instanceOutputs[baseKey];
+    if (sourceVar) {
+      // Check if the source is already a texture sample
+      if (typeof sourceVar === 'string' && sourceVar.includes('texture2D')) {
+        // Replace v_texCoord with our remapped coordinates
+        return sourceVar.replace(/v_texCoord/g, `vec2(${remappedX}, ${remappedY})`);
+      } else {
+        // For computed variables, coordinate remapping in GLSL is complex
+        logger.warn('WebGL', `Complex strand remapping for computed variable: ${baseKey}`);
+        return sourceVar;
+      }
+    }
+
+    logger.warn('WebGL', `Source strand not found for remapping: ${baseKey}`);
+    return '0.0';
+  }
+}
 export { WebGLRenderer };

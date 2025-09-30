@@ -1,0 +1,2 @@
+// Very simple sine wave test
+play(sin(me@time * 440 * 2 * 3.14159) * 0.1)

@@ -1,0 +1,2 @@
+// Simple green display to test WebGL
+display(0.2, 0.8, 0.3)

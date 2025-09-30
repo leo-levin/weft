@@ -1,0 +1,5 @@
+// Simple audio loading and playback test
+load("assets/orchid_forked.mp3")::a<t>
+
+// Try to play the audio directly
+play(sin(me@time * 440 * 2 * 3.14159))
