@@ -1,7 +1,7 @@
-import { clamp, isNum } from '../utils/math.js';
-import { logger } from '../utils/logger.js';
+import { clamp, isNum } from '../../utils/math.js';
+import { logger } from '../../utils/logger.js';
 import { AbstractRenderer } from './abstract-renderer.js';
-import { CrossContextManager, MediaManager } from './shared-utils.js';
+import { CrossContextManager, MediaManager } from '../shared-utils.js';
 
 class AudioWorkletRenderer extends AbstractRenderer {
   constructor(env, rendererManager = null) {

@@ -12,7 +12,7 @@ export class Coordinator {
     this.graph = null;
     this.activeRenderers = new Set();
 
-    this.outputStatemets = [];
+    this.outputStatements = [];
   }
 
   setRenderers({cpu, gpu, audio}) {
@@ -83,12 +83,12 @@ export class Coordinator {
 
   render() {
     if (this.activeRenderers.has('gpu') && this.gpuRenderer) {
-        this.gpuRenderer.render();
-      } else if (this.activeRenderers.has('cpu') && this.cpuRenderer) {
-        this.cpuRenderer.render();
-      } else if (this.activeRenderers.has('cpu') && this.audioRenderer) {
-        this.audioRenderer.render();
-      }
+      this.gpuRenderer.render();
+    } else if (this.activeRenderers.has('cpu') && this.cpuRenderer) {
+      this.cpuRenderer.render();
+    }
+
+    // Audio rendering happens automatically in worklet (no explicit render call)
   }
 
   cleanup(){

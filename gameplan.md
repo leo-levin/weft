@@ -506,45 +506,342 @@ function evalExpr(node, env) {
 
 ---
 
-### 1.3 Compiler Review (~200 lines of changes)
+### 1.3 JS Compiler Rewrite (~280 lines)
 
-**File:** `src/compilers/js-compiler.js` (modify existing)
+**File:** `src/compilers/js-compiler.js` (rewrite from scratch)
 
-**Current state:** 335 lines, mostly good
+**Current state:** 336 lines, but designed for old strand-based runtime
 
-**What YOU do:**
-1. Read the existing compiler
-2. Simplify caching if it's confusing (or keep if you understand it)
-3. Add a `route` parameter to compilation functions for renderer-specific behavior
-4. Clean up any dead code
+**Why rewrite?**
+- Old compiler references `evalExprToStrand` (doesn't exist in runtime-new.js)
+- `compileBasic()` uses strand evaluation (we don't have strands anymore)
+- StrandRemap handling is broken (JSON.stringify loses node references)
+- NO ROUTE PARAMETER NEEDED (each renderer has its own compiler now!)
 
-**Changes needed:**
+**What YOU write:**
 
 ```javascript
-// Add route-aware compilation
-export function compileExpr(node, env, route = 'cpu') {
-  // route can be 'cpu', 'gpu', or 'audio'
-  // Affects how certain nodes compile
+// js-compiler.js - Compiles WEFT AST to JavaScript functions for CPU renderer
+// This is ONLY used by CPURenderer - WebGL/Audio have their own compilers
+
+// ========== CACHING SYSTEM ==========
+const nodeCache = new WeakMap();
+let cacheId = 0;
+
+function getCacheKey(node) {
+  if (typeof node === 'object'  && node !== null) {
+    if (!nodeCache.has(node)) {
+      nodeCache.set(node, `n${cacheId++}`);
+    }
+    return nodeCache.get(node);
+  }
+  return String(node);
+}
+
+const fnCache = new Map();
+
+export function clearCache() {
+  fnCache.clear();
+  cacheId = 0;
+}
+
+// ========== AST → JS CODE GENERATION ==========
+function compileToJS(node, env) {
+  // Generate JavaScript code string from AST node
+  // Returns a string like "(x + y)" or "Math.sin(t)"
+
+  if (!node) return '0';
 
   switch (node.type) {
+    case 'Num':
+      return String(node.v);
+
+    case 'Str':
+      return `"${node.v.replace(/"/g, '\\"')}"`;
+
     case 'Me':
-      if (route === 'gpu') {
-        // GLSL: use varyings
-        return node.field === 'x' ? 'vPos.x' : 'vPos.y';
-      } else {
-        // JS: use variables
-        return node.field === 'x' ? 'x' : 'y';
+      // Access me instance fields
+      // me@x → x, me@time → t, etc.
+      switch (node.field) {
+        case 'x': return 'x';
+        case 'y': return 'y';
+        case 'time': return 't';
+        case 'frame': return 'f';
+        case 'width': return 'w';
+        case 'height': return 'h';
+        case 'abstime': return '((Date.now() - startTime) / 1000)';
+        case 'absframe': return 'absFrame';
+        case 'fps': return 'fps';
+        case 'loop': return 'loop';
+        case 'bpm': return 'bpm';
+        case 'beat': return 'Math.floor(((Date.now() - startTime) / 1000) * (bpm / 60)) % timesigNum';
+        case 'measure': return 'Math.floor(((Date.now() - startTime) / 1000) * (bpm / 60) / timesigNum)';
+        default: return '0';
       }
 
-    // ... rest of compilation
+    case 'Mouse':
+      return node.field === 'x' ? 'mx' : 'my';
+
+    case 'Var':
+      // Variable lookup: let a = 10; display(a)
+      return `getVar("${node.name}")`;
+
+    case 'Bin':
+      const left = compileToJS(node.left, env);
+      const right = compileToJS(node.right, env);
+      switch (node.op) {
+        case '+': return `(${left} + ${right})`;
+        case '-': return `(${left} - ${right})`;
+        case '*': return `(${left} * ${right})`;
+        case '/': return `(${left} / (${right} || 1e-9))`;  // Avoid div by zero
+        case '^': return `Math.pow(${left}, ${right})`;
+        case '%': return `((${left} % ${right} + ${right}) % ${right})`;  // Positive modulo
+        case '==': return `(${left} === ${right} ? 1 : 0)`;
+        case '!=': return `(${left} !== ${right} ? 1 : 0)`;
+        case '<': return `(${left} < ${right} ? 1 : 0)`;
+        case '>': return `(${left} > ${right} ? 1 : 0)`;
+        case '<=': return `(${left} <= ${right} ? 1 : 0)`;
+        case '>=': return `(${left} >= ${right} ? 1 : 0)`;
+        case 'AND': return `(${left} && ${right} ? 1 : 0)`;
+        case 'OR': return `(${left} || ${right} ? 1 : 0)`;
+        default: return '0';
+      }
+
+    case 'Unary':
+      const arg = compileToJS(node.expr, env);
+      if (node.op === '-') return `(-${arg})`;
+      if (node.op === 'NOT') return `(${arg} ? 0 : 1)`;
+      return `Math.${node.op}(${arg})`;  // sin, cos, etc.
+
+    case 'Call':
+      const args = node.args.map(a => compileToJS(a, env)).join(', ');
+
+      // Built-in functions
+      const builtins = {
+        sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan',
+        sqrt: 'Math.sqrt', abs: 'Math.abs', floor: 'Math.floor',
+        ceil: 'Math.ceil', round: 'Math.round',
+        min: 'Math.min', max: 'Math.max',
+        exp: 'Math.exp', log: 'Math.log', atan2: 'Math.atan2'
+      };
+
+      if (builtins[node.name]) {
+        return `${builtins[node.name]}(${args})`;
+      }
+
+      // Inline optimizations
+      if (node.name === 'clamp' && node.args.length === 3) {
+        const [val, min, max] = node.args.map(a => compileToJS(a, env));
+        return `(${val} < ${min} ? ${min} : ${val} > ${max} ? ${max} : ${val})`;
+      }
+
+      if (node.name === 'mix' && node.args.length === 3) {
+        const [a, b, t] = node.args.map(a => compileToJS(a, env));
+        return `(${a} + (${b} - ${a}) * ${t})`;
+      }
+
+      if (node.name === 'fract') {
+        return `(${args} - Math.floor(${args}))`;
+      }
+
+      return `Math.sin(${args})`;  // Fallback
+
+    case 'If':
+      const cond = compileToJS(node.condition, env);
+      const thenExpr = compileToJS(node.thenExpr, env);
+      const elseExpr = compileToJS(node.elseExpr, env);
+      return `(${cond} ? ${thenExpr} : ${elseExpr})`;
+
+    case 'Tuple':
+      // (r, g, b) → {r: ..., g: ..., b: ...} or [..., ..., ...]
+      const items = node.elements.map(e => compileToJS(e, env));
+      if (items.length === 3) {
+        return `[${items.join(', ')}]`;  // RGB tuple
+      }
+      return `[${items.join(', ')}]`;
+
+    case 'StrandAccess':
+      // color@r → getInstance("color", "r")
+      const baseName = node.base.name;  // VarExpr
+      const strandName = node.out;
+      return `getInstance("${baseName}", "${strandName}")`;
+
+    case 'StrandRemap':
+      // img@r(me@y, me@x) → evalStrandRemap with runtime node lookup
+      const nodeId = getCacheKey(node);
+      strandRemapNodes.set(nodeId, node);  // Store for runtime lookup
+      return `evalStrandRemap("${nodeId}")`;
+
+    case 'Index':
+      const base = compileToJS(node.base, env);
+      const index = compileToJS(node.index, env);
+      return `(${base}[${index}] || 0)`;
+
+    default:
+      console.warn(`[js-compiler] Unhandled node type: ${node.type}`);
+      return '0';
   }
 }
+
+// ========== STRAND REMAP RUNTIME SUPPORT ==========
+// Store StrandRemap nodes for runtime evaluation
+const strandRemapNodes = new Map();
+
+export function getStrandRemapNode(nodeId) {
+  return strandRemapNodes.get(nodeId);
+}
+
+// ========== FUNCTION WRAPPER GENERATION ==========
+function createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap) {
+  // Create optimized function with minimal parameter list
+
+  let params = ['x', 'y', 't', 'f', 'w', 'h', 'mx', 'my'];
+  let body = '';
+
+  // Inject getVar helper if needed
+  if (needsGetVar) {
+    params.push('getVar');
+    body += `
+    function getVar(name) {
+      const val = env.vars.get(name);
+      if (val === undefined) return 0;
+      if (typeof val === 'number') return val;
+      // It's an AST node - need to evaluate it (rare case)
+      return evalExpr(val, env, {x, y});
+    }
+    `;
+  }
+
+  // Inject getInstance helper if needed
+  if (needsGetInstance) {
+    params.push('getInstance');
+    body += `
+    function getInstance(baseName, strandName) {
+      const inst = env.instances.get(baseName);
+      if (!inst) return 0;
+
+      // If instance has accessor functions (e.g., from media)
+      if (typeof inst[strandName] === 'function') {
+        return inst[strandName]();
+      }
+
+      // If instance stores data directly
+      if (inst[strandName] !== undefined) {
+        return inst[strandName];
+      }
+
+      return 0;
+    }
+    `;
+  }
+
+  // Inject evalStrandRemap helper if needed
+  if (needsStrandRemap) {
+    params.push('evalStrandRemap');
+    body += `
+    function evalStrandRemap(nodeId) {
+      const node = getStrandRemapNode(nodeId);
+      if (!node) return 0;
+
+      // Import from runtime-new.js
+      return runtimeEvalStrandRemap(node, env, {x, y});
+    }
+    `;
+  }
+
+  // Add environment variables to function scope
+  body += `
+  const startTime = env.startTime;
+  const absFrame = env.frame;
+  const fps = env.targetFps;
+  const loop = env.loop;
+  const bpm = env.bpm;
+  const timesigNum = env.timesig_num;
+
+  return (${jsCode});
+  `;
+
+  try {
+    return new Function(...params, 'env', 'evalExpr', 'runtimeEvalStrandRemap', 'getStrandRemapNode', body);
+  } catch (e) {
+    console.error('[js-compiler] Function creation failed:', e);
+    console.error('Generated code:', body);
+    return null;
+  }
+}
+
+// ========== PUBLIC API ==========
+export function compile(node, env) {
+  // Main compilation entry point
+  // Returns a function: (me, env, ...contextVars) => result
+
+  const cacheKey = getCacheKey(node);
+
+  // Check cache
+  if (fnCache.has(cacheKey)) {
+    return fnCache.get(cacheKey);
+  }
+
+  // Generate JS code
+  const jsCode = compileToJS(node, env);
+
+  // Analyze what helpers are needed
+  const needsGetVar = jsCode.includes('getVar(');
+  const needsGetInstance = jsCode.includes('getInstance(');
+  const needsStrandRemap = jsCode.includes('evalStrandRemap(');
+
+  // Create function
+  const fn = createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap);
+
+  if (!fn) {
+    // Fallback to returning 0
+    return () => 0;
+  }
+
+  // Wrapper function that extracts context variables from me object
+  const wrapper = (me, envCtx, evalExprFn, runtimeEvalStrandRemapFn, getNodeFn) => {
+    return fn(
+      me.x, me.y,  // Spatial
+      ((envCtx.frame % envCtx.loop) / envCtx.targetFps),  // time
+      envCtx.frame % envCtx.loop,  // frame
+      envCtx.resW, envCtx.resH,  // dimensions
+      envCtx.mouse.x, envCtx.mouse.y,  // mouse
+      envCtx,  // full env for helpers
+      evalExprFn,  // For evaluating var expressions
+      runtimeEvalStrandRemapFn,  // From runtime-new.js
+      getNodeFn  // For looking up StrandRemap nodes
+    );
+  };
+
+  fnCache.set(cacheKey, wrapper);
+  return wrapper;
+}
+
+// Legacy export for compatibility
+export { compile as compileExpr };
 ```
 
+**Key changes from old compiler:**
+1. **No route parameter** - this ONLY compiles to JS (CPU renderer)
+2. **No strand system** - uses simple variable/instance lookup
+3. **StrandRemap uses runtime helper** - stores nodes in Map, looks up at runtime
+4. **Simplified caching** - WeakMap for objects, Map for compiled functions
+5. **Removed evalExprToStrand injection** - doesn't exist in new runtime
+
 **Your tasks:**
-1. Add route parameter to key functions
-2. Remove unnecessary abstractions
-3. Keep the core compilation logic (it works)
+1. Delete old js-compiler.js
+2. Create new js-compiler.js with the structure above
+3. Implement each case in `compileToJS()`
+4. Test with simple expressions: `me@x`, `me@x + me@y`, `sin(me@time)`
+5. Import `evalStrandRemap` from runtime-new.js for StrandRemap support
+
+**Delete after:**
+- Nothing to delete - this is a full rewrite
+
+**Integration points:**
+- CPURenderer imports `{ compile }` and uses it to compile display() expressions
+- Runtime-new.js exports `evalStrandRemap(node, env, me)` for coordinate remapping
+- WebGL/Audio renderers have their own `compileToGLSL()` / `compileToAudio()` methods
 
 ---
 
@@ -2107,3 +2404,347 @@ let pairs = WeftParser::parse(Rule::program, source)?;
 I'll be here to answer questions, review code, and handle all the UI/integration work.
 
 You focus on the core. Write clean. Write simple. Write fast. 🚀
+
+---
+
+## RENDERER ARCHITECTURE: CONTEXT-AGNOSTIC DATA, SPECIALIZED RENDERERS
+
+### Core Principle
+
+**WEFT instances are context-agnostic until render time.**
+
+```weft
+color<r> = me@x * me@y
+color<g> = sin(me@time)
+wave<audio> = sin(color@r * 440)  // Audio uses visual value!
+
+display(color@r, color@g, 0)      // Visual context
+play(wave@audio)                   // Audio context
+```
+
+The same data (`color<r>`) can be used in `display()`, `play()`, or `compute()`. Contexts are just different **output targets**, not different data types.
+
+### Architecture: Coordinator + Thin Renderers
+
+**Coordinator responsibilities:**
+- Build dependency graph (RenderGraph)
+- CPU evaluator for ALL instances (cross-context interop)
+- Frame timing and FPS control
+- Activate appropriate renderers based on output statements
+- Route cross-context value requests
+
+**Renderer responsibilities (minimal):**
+- `init()` - Set up rendering context (WebGL, Audio, etc.)
+- `compile(ast, env)` - Translate AST to target language (GLSL, native audio, etc.)
+- `render()` - Execute one frame/buffer in specialized environment
+- `cleanup()` - Release resources
+
+**That's it!** Renderers are thin wrappers around their specialized execution environments.
+
+### Implementation Details
+
+**1. Coordinator structure:**
+```javascript
+class Coordinator {
+  constructor(ast, env) {
+    this.ast = ast;
+    this.env = env;
+    this.graph = null;
+    this.cpuEvaluator = null;
+
+    this.gpuRenderer = null;
+    this.audioRenderer = null;
+    this.cpuRenderer = null;
+  }
+
+  async compile() {
+    // Step 1: Build dependency graph
+    this.graph = new RenderGraph(this.ast, this.env);
+    const graphResult = this.graph.build();
+
+    this.outputStatements = this.ast.statements.filter(s =>
+      s.type === 'DisplayStmt' || s.type === 'RenderStmt' ||
+      s.type === 'PlayStmt' || s.type === 'ComputeStmt'
+    );
+
+    // Step 2: Tag contexts
+    this.graph.tagContexts(this.outputStatements);
+    const contextsNeeded = this.graph.getContextsNeeded();
+
+    // Step 3: Build CPU evaluator for ALL instances (mandatory!)
+    this.cpuEvaluator = new CPUEvaluator(this.graph, this.env);
+    await this.cpuEvaluator.compile();
+
+    // Step 4: Compile each active renderer to its native target
+    const compilePromises = [];
+
+    if (contextsNeeded.has('visual') && this.gpuRenderer) {
+      this.gpuRenderer.coordinator = this; // Give access to getValue
+      compilePromises.push(this.gpuRenderer.compile(this.ast, this.env));
+    }
+
+    if (contextsNeeded.has('audio') && this.audioRenderer) {
+      this.audioRenderer.coordinator = this; // Give access to getValue
+      compilePromises.push(this.audioRenderer.compile(this.ast, this.env));
+    }
+
+    if (contextsNeeded.has('compute') && this.cpuRenderer) {
+      this.cpuRenderer.coordinator = this;
+      compilePromises.push(this.cpuRenderer.compile(this.ast, this.env));
+    }
+
+    await Promise.all(compilePromises);
+  }
+
+  // Cross-context value access
+  getValue(instanceName, outputName, x, y, t) {
+    return this.cpuEvaluator.eval(instanceName, outputName, x, y, t);
+  }
+}
+```
+
+**2. CPUEvaluator (revives js-compiler.js):**
+```javascript
+import { compileToJS } from '../compilers/js-compiler.js';
+
+export class CPUEvaluator {
+  constructor(graph, env) {
+    this.graph = graph;
+    this.env = env;
+    this.functions = new Map(); // instanceName@outputName → compiled JS function
+  }
+
+  async compile() {
+    // For each instance in the graph, compile all its outputs to JS functions
+    for (const [instanceName, node] of this.graph.nodes) {
+      for (const [outputName, exprAST] of node.outputs) {
+        const key = `${instanceName}@${outputName}`;
+
+        // Use js-compiler to create executable JS function
+        const compiledFn = compileToJS(exprAST, this.env);
+        this.functions.set(key, compiledFn);
+      }
+    }
+
+    console.log(`[CPUEvaluator] Compiled ${this.functions.size} instance outputs`);
+  }
+
+  eval(instanceName, outputName, x, y, t) {
+    const key = `${instanceName}@${outputName}`;
+    const fn = this.functions.get(key);
+
+    if (!fn) {
+      console.warn(`[CPUEvaluator] Instance output not found: ${key}`);
+      return 0;
+    }
+
+    // Execute the compiled function with current coordinates/time
+    const me = { x, y, time: t };
+    return fn(me, this.env);
+  }
+}
+```
+
+**3. BaseRenderer interface:**
+```javascript
+export class BaseRenderer {
+  constructor(env, name) {
+    this.env = env;
+    this.name = name;
+    this.coordinator = null; // Set by Coordinator during compile()
+  }
+
+  async init() { throw new Error('implement init'); }
+  async compile(ast, env) { throw new Error('implement compile'); }
+  render() { throw new Error('implement render'); }
+  cleanup() {}
+
+  // Helper: Get cross-context value via coordinator
+  getCrossContextValue(instanceName, outputName, x, y, t) {
+    if (!this.coordinator) {
+      console.warn(`[${this.name}] No coordinator - can't get cross-context value`);
+      return 0;
+    }
+    return this.coordinator.getValue(instanceName, outputName, x, y, t);
+  }
+}
+```
+
+**4. AudioRenderer using cross-context access:**
+```javascript
+class AudioWorkletRenderer extends BaseRenderer {
+  async compile(ast, env) {
+    // ... analyze which instances we need ...
+
+    // Generate worklet code
+    let workletCode = `
+      class WEFTProcessor extends AudioWorkletProcessor {
+        process(inputs, outputs, parameters) {
+          const output = outputs[0][0];
+
+          for (let i = 0; i < output.length; i++) {
+            const t = (this.sampleIndex + i) / sampleRate;
+
+            // For cross-context dependencies, we need a mechanism
+            // TODO(human): How does worklet call back to main thread?
+            // Options:
+            //   A) Pre-compute visual values, send to worklet via SharedArrayBuffer
+            //   B) Keep audio expressions simple (no visual deps in worklet)
+            //   C) Evaluate everything on main thread (defeats worklet purpose)
+          }
+        }
+      }
+    `;
+  }
+}
+```
+
+**TODO(human): Audio Worklet Cross-Context Problem**
+
+Audio worklet runs in separate thread and CAN'T call `coordinator.getValue()` directly (no main thread access).
+
+**Options:**
+
+**A) SharedArrayBuffer approach:**
+```javascript
+// Main thread: Pre-compute visual values each frame
+const visualBuffer = new Float32Array(sharedArrayBuffer);
+requestAnimationFrame(() => {
+  visualBuffer[0] = coordinator.getValue('color', 'r', 0.5, 0.5, time);
+  visualBuffer[1] = coordinator.getValue('color', 'g', 0.5, 0.5, time);
+});
+
+// Worklet: Read from shared buffer
+const colorR = visualBuffer[0];
+const wave = Math.sin(colorR * 440);
+```
+
+**B) Evaluate audio on main thread (not worklet):**
+```javascript
+// AudioRenderer runs on main thread, outputs via ScriptProcessorNode
+// Can call coordinator.getValue() directly
+// Downside: Main thread audio is deprecated, may have timing issues
+```
+
+**C) Bake visual dependencies at compile time:**
+```javascript
+// If audio depends on simple visual expression, evaluate during compilation
+// Only works for time-independent expressions
+```
+
+**D) Message passing (slow):**
+```javascript
+// Worklet posts message to main thread, waits for response
+// Too slow for real-time audio (introduces latency)
+```
+
+### TODO(human) - Critical Design Decisions
+
+**1. Audio worklet cross-context access - which approach?**
+
+Audio worklet runs in isolated thread, can't call main thread functions. When audio needs visual value:
+
+- **Option A: SharedArrayBuffer** - Main thread pre-computes visual values into shared memory, worklet reads
+  - Pros: Real-time, no latency
+  - Cons: Limited sampling points (can't read arbitrary x,y), requires COOP/COEP headers
+
+- **Option B: ScriptProcessorNode** - Run audio on main thread instead of worklet
+  - Pros: Direct access to coordinator.getValue(), simple
+  - Cons: Deprecated API, may have glitches under heavy load
+
+- **Option C: Compile visual deps into worklet** - Duplicate compilation (GLSL + worklet JS)
+  - Pros: Worklet is self-contained, no cross-thread communication
+  - Cons: Code duplication, larger worklet code
+
+- **Option D: Restrict cross-context** - Audio can't depend on visual (error or warning)
+  - Pros: Simplest implementation
+  - Cons: Defeats WEFT's core purpose
+
+**Recommendation:** Start with Option B (ScriptProcessorNode) for simplicity, migrate to Option C (duplicate compilation) when we need worklet performance. Option A is future optimization if needed.
+
+**2. Visual reading audio values - do we need this?**
+
+Does visual ever need to read audio values? Example:
+```weft
+wave<audio> = sin(me@time * 440)
+viz<r> = wave@audio  // Visual driven by audio amplitude?
+
+play(wave@audio)
+display(viz@r, 0, 0)
+```
+
+If yes, GPU can't evaluate this (no audio in GLSL). Would need:
+- CPU evaluator computes `wave@audio` value
+- Pass to GPU as uniform
+- Or evaluate entire `viz<r>` on CPU (slow)
+
+**3. How to handle texture/media sampling in cross-context?**
+
+Example:
+```weft
+img<r> = load("cat.jpg")@r(x~me@x, y~me@y)
+
+wave<audio> = sin(img@r * 440)  // Audio needs texture sample!
+
+display(img@r, 0, 0)
+play(wave@audio)
+```
+
+Texture is on GPU, audio needs pixel value. Options:
+- CPU keeps copy of texture data in typed array
+- GPU readback (very slow)
+- Error: "Can't sample texture in audio context"
+
+**4. Renderer registry structure in Coordinator:**
+```javascript
+// Approach A: By context
+this.renderersByContext = new Map([
+  ['visual', this.gpuRenderer],
+  ['audio', this.audioRenderer]
+]);
+
+// Approach B: By name
+this.renderers = {
+  gpu: this.gpuRenderer,
+  audio: this.audioRenderer
+};
+
+// Approach C: Array (simpler)
+this.renderers = [this.gpuRenderer, this.audioRenderer].filter(Boolean);
+```
+
+5. **Abstract renderer bloat:**
+   - Current abstract-renderer.js is 371 lines
+   - Most is frame timing, performance monitoring, DOM updates
+   - Should this move to Coordinator instead?
+   - Make BaseRenderer truly minimal?
+
+### Suggested Implementation Plan
+
+**Phase 1: Thin Base Class (DO THIS NOW)**
+```javascript
+// base-renderer.js
+export class BaseRenderer {
+  constructor(env, name) {
+    this.env = env;
+    this.name = name;
+  }
+
+  async init() { throw new Error('implement'); }
+  async compile(ast) { throw new Error('implement'); }
+  render() { throw new Error('implement'); }
+  cleanup() {}
+}
+```
+
+**Phase 2: Refactor Existing Renderers**
+- WebGLRenderer extends BaseRenderer (remove AbstractRenderer bloat)
+- AudioWorkletRenderer extends BaseRenderer (same)
+- Move frame timing/monitoring to Coordinator
+
+**Phase 3: Inter-Renderer Communication (ONLY IF NEEDED)**
+- Add getValue() to BaseRenderer interface
+- Implement CPUEvaluator using js-compiler.js
+- Coordinator provides routing
+
+**Don't over-engineer until you have a concrete need!**

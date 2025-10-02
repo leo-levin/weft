@@ -1,9 +1,9 @@
 // renderer-manager.js — Coordinates multiple WEFT renderers
-import { logger } from '../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 import { UnifiedParameterSystem } from './parameter-system.js';
-import { tagExpressionRoutes } from '../lang/tagging.js';
-import { VisualDependencyAnalyzer } from './shared-utils.js';
-import { compileExpr } from '../compilers/js-compiler.js';
+import { tagExpressionRoutes } from '../../lang/tagging.js';
+import { VisualDependencyAnalyzer } from '../shared-utils.js';
+import { compileExpr } from '../../compilers/js-compiler.js';
 
 /**
  * Manages and coordinates multiple WEFT renderers (CPU, WebGL, Audio)

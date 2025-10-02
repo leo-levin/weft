@@ -1,6 +1,6 @@
 // parameter-system.js — Unified parameter management for all renderers
-import { logger } from '../utils/logger.js';
-import { findCrossContextExpressions, traceDependencies } from '../lang/tagging.js';
+import { logger } from '../../utils/logger.js';
+import { findCrossContextExpressions, traceDependencies } from '../../lang/tagging.js';
 
 /**
  * Unified parameter system that coordinates parameter sharing between renderers

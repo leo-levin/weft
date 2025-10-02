@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RenderGraph + Coordinator Tests</title>
+  <script src="https://unpkg.com/ohm-js@17/dist/ohm.min.js"></script>
+  <style>
+    body {
+      font-family: 'Monaco', 'Menlo', monospace;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 20px;
+      line-height: 1.6;
+    }
+
+    h1 {
+      color: #4fc3f7;
+      border-bottom: 2px solid #4fc3f7;
+      padding-bottom: 10px;
+    }
+
+    .test {
+      margin: 20px 0;
+      padding: 15px;
+      border-left: 4px solid #666;
+      background: #2d2d2d;
+    }
+
+    .test.pass {
+      border-left-color: #4caf50;
+      background: #1b2e1b;
+    }
+
+    .test.fail {
+      border-left-color: #f44336;
+      background: #2e1b1b;
+    }
+
+    .test-name {
+      font-size: 1.1em;
+      font-weight: bold;
+      margin-bottom: 10px;
+      color: #fff;
+    }
+
+    .pass .test-name::before { content: '✓ '; color: #4caf50; }
+    .fail .test-name::before { content: '✗ '; color: #f44336; }
+
+    .code {
+      background: #1e1e1e;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 0.9em;
+      color: #ce9178;
+    }
+
+    .assertion {
+      margin: 5px 0;
+      padding: 5px;
+      font-size: 0.95em;
+    }
+
+    .assertion.pass { color: #4caf50; }
+    .assertion.fail { color: #f44336; }
+
+    .graph-data {
+      background: #252525;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+      font-size: 0.85em;
+    }
+
+    .summary {
+      margin-top: 30px;
+      padding: 20px;
+      background: #2d2d2d;
+      border: 2px solid #4fc3f7;
+      border-radius: 4px;
+    }
+
+    .summary.all-pass {
+      border-color: #4caf50;
+      background: #1b2e1b;
+    }
+  </style>
+</head>
+<body>
+  <h1>RenderGraph + Coordinator Tests</h1>
+  <div id="results"></div>
+  <div id="summary"></div>
+
+  <script type="module">
+    import { parse } from './src/lang/parser-new.js';
+    import { Env, Executor } from './src/runtime/runtime-new.js';
+    import { RenderGraph } from './src/renderers/render-graph.js';
+    import { Coordinator } from './src/renderers/coordinator.js';
+
+    const results = document.getElementById('results');
+    const summaryDiv = document.getElementById('summary');
+
+    let totalTests = 0;
+    let passedTests = 0;
+
+    function test(name, code, assertions) {
+      totalTests++;
+      const div = document.createElement('div');
+      div.className = 'test';
+
+      try {
+        // Debug: log actual code
+        console.log(`[Test: ${name}]`, code);
+
+        // Parse
+        const ast = parse(code);
+
+        // Execute
+        const env = new Env();
+        const executor = new Executor(env);
+        executor.execute(ast);
+
+        // Build graph
+        const graph = new RenderGraph(ast, env);
+        const result = graph.build();
+
+        // Extract output statements
+        const outputStmts = ast.statements.filter(s =>
+          s.type === 'DisplayStmt' ||
+          s.type === 'RenderStmt' ||
+          s.type === 'PlayStmt' ||
+          s.type === 'ComputeStmt'
+        );
+
+        // Tag contexts
+        graph.tagContexts(outputStmts);
+
+        // Create coordinator (optional, for coordinator-specific tests)
+        const coordinator = new Coordinator(ast, env);
+
+        // Run assertions
+        let allPassed = true;
+        const assertionResults = [];
+
+        for (const [desc, check] of Object.entries(assertions)) {
+          try {
+            const passed = check(result, graph, outputStmts, coordinator, ast, env);
+            assertionResults.push({
+              desc,
+              passed,
+              error: null
+            });
+            if (!passed) allPassed = false;
+          } catch (e) {
+            assertionResults.push({
+              desc,
+              passed: false,
+              error: e.message
+            });
+            allPassed = false;
+          }
+        }
+
+        div.className += allPassed ? ' pass' : ' fail';
+        if (allPassed) passedTests++;
+
+        const escapeHtml = (str) => str.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+        div.innerHTML = `
+          <div class="test-name">${name}</div>
+          <div class="code">${escapeHtml(code.trim())}</div>
+          <div class="graph-data">
+            Nodes: ${result.nodes.size} |
+            Exec order: [${result.execOrder.join(', ')}] |
+            Contexts: ${Array.from(graph.getContextsNeeded()).join(', ') || 'none'}
+          </div>
+          ${assertionResults.map(r => `
+            <div class="assertion ${r.passed ? 'pass' : 'fail'}">
+              ${r.passed ? '[PASS]' : '[FAIL]'} ${r.desc}
+              ${r.error ? ` - ${r.error}` : ''}
+            </div>
+          `).join('')}
+        `;
+
+        results.appendChild(div);
+      } catch (e) {
+        div.className += ' fail';
+        const escapeHtml = (str) => str.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+        div.innerHTML = `
+          <div class="test-name">${name}</div>
+          <div class="code">${escapeHtml(code.trim())}</div>
+          <div class="assertion fail">
+            [ERROR] ${e.message}<br>
+            <pre style="font-size: 0.8em; margin-top: 5px;">${e.stack}</pre>
+          </div>
+        `;
+        results.appendChild(div);
+      }
+    }
+
+    // ===== TEST SUITE =====
+
+    // Test 1: Basic instance collection
+    test('Basic instance collection', `
+      color<r> = 0.5
+      color<g> = 0.8
+      color<b> = 0.2
+      display(color@r, color@g, color@b)
+    `, {
+      'Should have 1 node (color)': (result) => result.nodes.size === 1,
+      'color node should have 3 outputs': (result) =>
+        result.nodes.get('color').outputs.size === 3,
+      'color outputs should be r, g, b': (result) => {
+        const outputs = result.nodes.get('color').outputs;
+        return outputs.has('r') && outputs.has('g') && outputs.has('b');
+      },
+      'color should be type expr': (result) =>
+        result.nodes.get('color').type === 'expr'
+    });
+
+    // Test 2: Dependency tracking
+    test('Dependency tracking', `
+      base<x> = me@x
+      derived<y> = base@x + 10
+      display(derived@y, 0, 0)
+    `, {
+      'Should have 2 nodes': (result) => result.nodes.size === 2,
+      'derived should depend on base': (result) =>
+        result.nodes.get('derived').deps.has('base'),
+      'Exec order should be [base, derived]': (result) =>
+        result.execOrder[0] === 'base' && result.execOrder[1] === 'derived'
+    });
+
+    // Test 3: Visual context tagging
+    test('Visual context tagging', `
+      color<r> = me@x
+      color<g> = me@y
+      display(color@r, color@g, 0)
+    `, {
+      'color should have visual context': (result, graph) =>
+        result.nodes.get('color').contexts.has('visual'),
+      'Should have 1 context (visual)': (result, graph) =>
+        graph.getContextsNeeded().size === 1 &&
+        graph.getContextsNeeded().has('visual')
+    });
+
+    // Test 4: Audio context tagging
+    test('Audio context tagging', `
+      wave<audio> = sin(me@time * 440)
+      play(wave@audio)
+    `, {
+      'wave should have audio context': (result) =>
+        result.nodes.get('wave').contexts.has('audio'),
+      'Should have 1 context (audio)': (result, graph) =>
+        graph.getContextsNeeded().size === 1 &&
+        graph.getContextsNeeded().has('audio')
+    });
+
+    // Test 5: Cross-context tagging
+    test('Cross-context tagging (visual + audio)', `
+      shared<value> = sin(me@time)
+      display(shared@value, 0, 0)
+      play(shared@value)
+    `, {
+      'shared should have visual context': (result) =>
+        result.nodes.get('shared').contexts.has('visual'),
+      'shared should have audio context': (result) =>
+        result.nodes.get('shared').contexts.has('audio'),
+      'shared should have 2 contexts': (result) =>
+        result.nodes.get('shared').contexts.size === 2,
+      'Should have 2 contexts total': (result, graph) =>
+        graph.getContextsNeeded().size === 2
+    });
+
+    // Test 6: Transitive context tagging
+    test('Transitive context tagging', `
+      base<val> = me@x
+      middle<val> = base@val * 2
+      top<val> = middle@val + 1
+      display(top@val, 0, 0)
+    `, {
+      'base should have visual context': (result) =>
+        result.nodes.get('base').contexts.has('visual'),
+      'middle should have visual context': (result) =>
+        result.nodes.get('middle').contexts.has('visual'),
+      'top should have visual context': (result) =>
+        result.nodes.get('top').contexts.has('visual'),
+      'All 3 nodes tagged': (result) =>
+        result.nodes.get('base').contexts.size === 1 &&
+        result.nodes.get('middle').contexts.size === 1 &&
+        result.nodes.get('top').contexts.size === 1
+    });
+
+    // Test 7: Multiple output statements
+    test('Multiple display statements', `
+      color1<r> = 0.5
+      color2<g> = 0.8
+      display(color1@r, 0, 0)
+      display(0, color2@g, 0)
+    `, {
+      'Both instances tagged visual': (result) =>
+        result.nodes.get('color1').contexts.has('visual') &&
+        result.nodes.get('color2').contexts.has('visual'),
+      'Should have visual context': (result, graph) =>
+        graph.getContextsNeeded().has('visual')
+    });
+
+    // Test 8: Binary expression dependencies
+    test('Binary expression context propagation', `
+      a<val> = 1
+      b<val> = 2
+      c<val> = a@val + b@val
+      display(c@val, 0, 0)
+    `, {
+      'All nodes should have visual context': (result) =>
+        result.nodes.get('a').contexts.has('visual') &&
+        result.nodes.get('b').contexts.has('visual') &&
+        result.nodes.get('c').contexts.has('visual'),
+      'c should depend on a and b': (result) =>
+        result.nodes.get('c').deps.has('a') &&
+        result.nodes.get('c').deps.has('b')
+    });
+
+    // Test 9: Coordinator renderer activation
+    test('Coordinator renderer activation - visual only', `
+      color<rgb> = me@x
+      display(color@rgb, 0, 0)
+    `, {
+      'Coordinator should have output statements': (result, graph, outputStmts) =>
+        outputStmts.length === 1,
+      'Output statement should be DisplayStmt': (result, graph, outputStmts) =>
+        outputStmts[0].type === 'DisplayStmt'
+    });
+
+    // Test 10: Complex graph with call expressions
+    test('Call expression context tagging', `
+      value<val> = me@time
+      result<val> = sin(value@val)
+      display(result@val, 0, 0)
+    `, {
+      'value and result both visual': (result) =>
+        result.nodes.get('value').contexts.has('visual') &&
+        result.nodes.get('result').contexts.has('visual'),
+      'result depends on value': (result) =>
+        result.nodes.get('result').deps.has('value')
+    });
+
+    // Test 11: Render statement (explicit GPU route)
+    test('Render statement routing', `
+      color<rgb> = me@x
+      render(color@rgb, 0, 0)
+    `, {
+      'color should have visual context': (result) =>
+        result.nodes.get('color').contexts.has('visual'),
+      'Output statement route should be gpu': (result, graph, outputStmts) =>
+        outputStmts[0].route === 'gpu'
+    });
+
+    // Test 12: Compute statement routing
+    test('Compute statement routing', `
+      data<value> = me@x * 2
+      compute(data@value)
+    `, {
+      'data should have compute context': (result) =>
+        result.nodes.get('data').contexts.has('compute'),
+      'Output statement route should be cpu': (result, graph, outputStmts) =>
+        outputStmts[0].route === 'cpu'
+    });
+
+    // Wait a bit for all tests to complete, then show summary
+    setTimeout(() => {
+      const allPass = passedTests === totalTests;
+      summaryDiv.className = 'summary' + (allPass ? ' all-pass' : '');
+      summaryDiv.innerHTML = `
+        <h2>Test Summary</h2>
+        <div style="font-size: 1.2em;">
+          <strong>${passedTests} / ${totalTests}</strong> tests passed
+        </div>
+        <div style="margin-top: 10px; font-size: 0.9em; color: #999;">
+          ${allPass ?
+            'All tests passed! RenderGraph and Coordinator are working correctly.' :
+            `${totalTests - passedTests} test(s) failed. Check the output above for details.`
+          }
+        </div>
+      `;
+    }, 100);
+  </script>
+</body>
+</html>

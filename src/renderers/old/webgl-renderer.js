@@ -1,7 +1,7 @@
 // WebGL Renderer with WEFT-to-GLSL compiler for GPU acceleration
-import { logger } from '../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 import { AbstractRenderer } from './abstract-renderer.js';
-import { CrossContextManager, MediaManager } from './shared-utils.js';
+import { CrossContextManager, MediaManager } from '../shared-utils.js';
 
 class WebGLRenderer extends AbstractRenderer {
   constructor(canvas, env) {

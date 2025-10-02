@@ -1,5 +1,5 @@
 // abstract-renderer.js — Base class for all WEFT renderers
-import { logger } from '../utils/logger.js';
+import { logger } from '../../utils/logger.js';
 
 /**
  * Abstract base class that defines the common interface and shared functionality

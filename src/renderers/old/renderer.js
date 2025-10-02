@@ -1,9 +1,9 @@
 // renderer.js — CPU renderer extending AbstractRenderer
-import { clamp, isNum } from '../utils/math.js';
+import { clamp, isNum } from '../../utils/math.js';
 import { AbstractRenderer } from './abstract-renderer.js';
-import { CrossContextManager, MediaManager, ValueUtils } from './shared-utils.js';
-import { logger } from '../utils/logger.js';
-import { compile, compileExpr } from '../compilers/js-compiler.js';
+import { CrossContextManager, MediaManager, ValueUtils } from '../shared-utils.js';
+import { logger } from '../../utils/logger.js';
+import { compile, compileExpr } from '../../compilers/js-compiler.js';
 
 class Renderer extends AbstractRenderer {
   constructor(canvas, env) {

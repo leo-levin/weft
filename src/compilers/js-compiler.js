@@ -1,11 +1,7 @@
-// js-compiler.js — High-performance WEFT-to-JavaScript compiler
-
-// Ultra-fast cache using WeakMap for object identity + Map for primitives
 const nodeIdCache = new WeakMap();
 let nodeIdCounter = 0;
 const compiledFunctionCache = new Map();
 
-// Generate fast cache key without JSON.stringify
 function getNodeId(node) {
   if (typeof node === 'object' && node !== null) {
     if (!nodeIdCache.has(node)) {
@@ -16,7 +12,6 @@ function getNodeId(node) {
   return String(node);
 }
 
-// Pre-resolved builtin function mappings with inlined operations
 const BUILTIN_JS_MAP = {
   sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan',
   sqrt: 'Math.sqrt', abs: 'Math.abs', exp: 'Math.exp', log: 'Math.log',
