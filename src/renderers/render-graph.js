@@ -40,6 +40,7 @@ export class RenderGraph {
           outputs: new Map(),
           deps: new Set(),
           requiredOutputs: new Set(),
+          contexts: new Set()
         });
       }
       const node = this.nodes.get(name);
@@ -254,5 +255,118 @@ export class RenderGraph {
     if (this.execOrder.length !== this.nodes.size) {
       throw new Error("Circular dependency in render graph!");
     }
+  }
+
+  tagContexts(graphResult){
+      for (const stmt of outputStmts) {
+      const context = this.getStmtContext(stmt);
+      if (!context) continue;
+
+      for (const expr of stmt.args) {
+        this.tagDepsInExpr(expr, context, this.nodes);
+      }
+    }
+  }
+
+  getStmtContext(stmt) {
+    switch(stmt.type) {
+      case 'DisplayStmt':
+      case 'RenderStmt':
+        return 'visual';
+      case 'PlayStmt':
+        return 'audio';
+      case 'ComputeStmt':
+        return 'compute';
+      default:
+        return null;
+    }
+  }
+
+  tagDepsInExpr(expr, context, nodes) {
+    if (!expr) return;
+
+    match(expr,
+      inst(StrandAccessExpr, _, _), (b,s) => {
+        if (base.type === 'Var') {
+          const instName = base.name;
+          if(nodes.has(instName)) {
+            nodes.get(instName).contexts.add(context);
+            this.tagInstDeps(instName, context, nodes);
+          }
+        }
+      },
+
+      inst(StrandRemapExpr, _, _, _), (b,s,ms) => {
+        if (base.type === 'Var') {
+          const instName = base.name;
+          if (nodes.has(instName)) {
+            nodes.get(instName).contexts.add(context);
+            this.tagInstanceDeps(instName, context,nodes);
+          }
+        }
+        for (const map of ms) {
+          this.tagDepsInExpr(map, context, nodes);
+        }
+      },
+
+      inst(BinaryExpr, _, _, _), (op, left, right) => {
+        this.tagDepsInExpr(left, context, nodes);
+        this.tagDepsInExpr(right, context, nodes);
+      },
+
+      inst(UnaryExpr, _, _), (op, innerExpr) => {
+        this.tagDepsInExpr(innerExpr, context, nodes);
+      },
+
+      inst(CallExpr, _, _), (name, args) => {
+        for (const arg of args) {
+          this.tagDepsInExpr(arg, context, nodes);
+        }
+      },
+
+      inst(IfExpr, _, _, _), (cond, thenExpr, elseExpr) => {
+        this.tagDepsInExpr(cond, context, nodes);
+        this.tagDepsInExpr(thenExpr, context, nodes);
+        this.tagDepsInExpr(elseExpr, context, nodes);
+      },
+
+      inst(TupleExpr, _), (items) => {
+        for (const item of items) {
+          this.tagDepsInExpr(item, context, nodes);
+        }
+      },
+
+      inst(IndexExpr, _, _), (base, index) => {
+        this.tagDepsInExpr(base, context, nodes);
+        this.tagDepsInExpr(index, context, nodes);
+      },
+      _, (n) => {}
+    );
+  }
+
+  tagInstDeps(instName, context, nodes) {
+    const node = nodes.get(instName);
+    if(!node) return;
+
+    for (const depName of node.deps) {
+      if (nodes.has(depName)) {
+        const depNode = nodes.get(depName);
+
+        if(!depNode.contexts.has(context)) {
+          depNode.contexts.add(context);
+          this.tagInstDeps(depName, context, nodes);
+        }
+      }
+    }
+  };
+
+  getContextsNeeded() {
+    const contexts = new Set();
+    for (const [name, node] of this.nodes) {
+      for (const ctx of node.contexts) {
+        contexts.add(ctx);
+      }
+    }
+    return contexts;
   }
 }
