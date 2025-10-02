@@ -146,7 +146,6 @@ export class RenderGraph {
 
   findDepsInExpr(expr) {
     const deps = new Set();
-
     match(
       expr,
       inst(StrandAccessExpr, _, _),
