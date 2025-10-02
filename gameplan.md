@@ -2173,12 +2173,3 @@ export function compile(node, env) {
 
 export { compile as compileExpr };
 ```
-
-**Key Implementation Notes:**
-
-1. **Pattern matching with `inst()`:** Each AST node type is matched using `inst(NodeClass, _, _, ...)` where the underscores match constructor arguments
-2. **Automatic deconstruction:** The match callback receives the deconstructed node properties
-3. **Binary operations (TODO):** You need to use nested `match()` on the `op` to handle all operators
-4. **Check AST node structure:** Look at `src/ast/ast-node.js` to see what each node's `deconstruct()` returns
-
-**Goal:** ~150 lines of clean, elegant code using pattern matching.

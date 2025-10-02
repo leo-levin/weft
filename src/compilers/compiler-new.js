@@ -35,7 +35,7 @@ function compileToJS(node, env) {
 
   return match(node,
     inst(NumExpr, _), (v) => String(v),
-    inst(StrExp, _), (v) => `"${v.replace(/"/g, '\\"')}"`,
+    inst(StrExpr, _), (v) => `"${v.replace(/"/g, '\\"')}"`,
     inst(MeExpr, _), (field) => match(field,
       "x", () => "x",
       "y", () => "y",
@@ -59,16 +59,16 @@ function compileToJS(node, env) {
         "%", () => `((${leftCode}%${rightCode}+${rightCode})%${rightCode})`,
         "==", () => `(${leftCode}===${rightCode}?1:0)`,
         "!=", () => `(${leftCode}!==${rightCode}?1:0)`,
-         "<<", () => `(${leftCode}<${rightCode}?1:0)`,
-         ">>", () => `(${leftCode}>${rightCode}?1:0)`,
-          "<=", () => `(${leftCode}<=${rightCode}?1:0)`,
-          ">=", () => `(${leftCode}>=${rightCode}?1:0)`,
-          "AND", () => `(${leftCode}&&${rightCode}?1:0)`,
-          "OR", () => `(${leftCode}||${rightCode}?1:0)`,
-          _, (n) => "0"
+        "<<", () => `(${leftCode}<${rightCode}?1:0)`,
+        ">>", () => `(${leftCode}>${rightCode}?1:0)`,
+        "<=", () => `(${leftCode}<=${rightCode}?1:0)`,
+        ">=", () => `(${leftCode}>=${rightCode}?1:0)`,
+        "AND", () => `(${leftCode}&&${rightCode}?1:0)`,
+        "OR", () => `(${leftCode}||${rightCode}?1:0)`,
+        _, (n) => "0"
       );
     },
-    inst(Unary, _, _), (op, expr) => {
+    inst(UnaryExpr, _, _), (op, expr) => {
       const arg = compileToJS(expr, env);
       return match(op,
         "-", () => `(-${arg})`,
@@ -79,13 +79,13 @@ function compileToJS(node, env) {
         }
       );
     },
-    inst(If, _, _, _), (condition, thenExpr, elseExpr) => {
+    inst(IfExpr, _, _, _), (condition, thenExpr, elseExpr) => {
       const cond = compileToJS(condition, env);
       const thenCode = compileToJS(thenExpr, env);
       const elseCode = compileToJS(elseExpr, env);
       return `(${cond}?${thenCode}:${elseCode})`;
     },
-    inst(Call, _, _), (name, args) => {
+    inst(CallExpr, _, _), (name, args) => {
       const argCodes = args.map(arg => compileToJS(arg, env));
 
       // Check for built-in math functions
@@ -105,8 +105,8 @@ function compileToJS(node, env) {
         _, () => `Math.sin(${argCodes.join(',')})`
       );
     },
-    inst(Var, _), (name) => `getVar("${name}")`,
-    inst(StrandAccess, _, _), (base, out) =>
+    inst(VarExpr, _), (name) => `getVar("${name}")`,
+    inst(StrandAccessExpr, _, _), (base, out) =>
       `getInstance("${base}","${out}")`,
     inst(StrandRemap, _, _, _), (base, out, coords) =>
       `evalStrandRemap(${JSON.stringify(node)})`,
@@ -126,3 +126,86 @@ function getMathFunction(name) {
   };
   return MAP[name];
 }
+
+
+function createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap) {
+  let params = ['x', 'y', 't', 'f', 'w', 'h', 'mx', 'my'];
+  let body = '';
+
+  if (needsGetVar) {
+    params.push('getVar');
+    body += `
+    function getVar(name) {
+      const val = env.vars.get(name);
+      if (val === undefined) return 0;
+      if (typeof val === 'number') return val;
+      return evalExpr(val, env, {x, y});
+    }
+    `;
+  }
+
+  if (needsGetInstance) {
+    params.push('getInstance');
+    body += `
+    function getInstance(baseName, strandName) {
+      const inst = env.instances.get(baseName);
+      if (!inst) return 0;
+      if (typeof inst[strandName] === 'function') return inst[strandName]();
+      if (inst[strandName] !== undefined) return inst[strandName];
+      return 0;
+    }
+    `;
+  }
+
+  if (needsStrandRemap) {
+    params.push('evalStrandRemap');
+    body += `
+    function evalStrandRemap(node) {
+      return runtimeEvalStrandRemap(node, env, {x, y});
+    }
+    `;
+  }
+
+  body += `
+  const startTime = env.startTime;
+  const absFrame = env.frame;
+  const fps = env.targetFps;
+  const loop = env.loop;
+  const bpm = env.bpm;
+  const timesigNum = env.timesig_num;
+
+  return (${jsCode});
+  `;
+
+  try {
+    return new Function(...params, 'env', 'evalExpr', 'runtimeEvalStrandRemap', body);
+  } catch (e) {
+    console.error('[js-compiler] Function creation failed:', e);
+    console.error('Generated code:', body);
+    return null;
+  }
+}
+
+
+
+export function compile(node, env) {
+  const jsCode = compileToJS(node, env);
+
+  const needsGetVar = jsCode.includes('getVar(');
+  const needsGetInstance = jsCode.includes('getInstance(');
+  const needsStrandRemap = jsCode.includes('evalStrandRemap(');
+
+  const fn = createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap);
+
+  if (!fn) return () => 0;
+
+  return (me, envCtx, evalExprFn, runtimeEvalStrandRemapFn) => {
+    const currentTime = ((envCtx.frame % envCtx.loop) / envCtx.targetFps);
+    return fn(
+      me.x, me.y, currentTime, envCtx.frame % envCtx.loop,
+      envCtx.resW, envCtx.resH, envCtx.mouse.x, envCtx.mouse.y,
+      envCtx, evalExprFn, runtimeEvalStrandRemapFn
+    );
+  };
+}
+export { compile as compileExpr };
