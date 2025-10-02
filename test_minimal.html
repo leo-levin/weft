@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js"></script>
+</head>
+<body>
+  <h1>Minimal Parser Test</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { parse } from './src/lang/parser-new.js';
+    import { Env, Executor } from './src/runtime/runtime-new.js';
+
+    const output = document.getElementById('output');
+    let log = '';
+
+    function print(msg) {
+      log += msg + '\n';
+      output.textContent = log;
+    }
+
+    // Test 1: Tilde syntax
+    print('=== Test 1: Tilde Syntax ===');
+    try {
+      const code = `display(img@r(x ~ me@y, y ~ me@x))`;
+      const ast = parse(code);
+      print('Parse OK');
+      print('AST type: ' + ast.statements[0].type);
+      print('Positional args: ' + ast.statements[0].positionalArgs.length);
+
+      const expr = ast.statements[0].positionalArgs[0];
+      print('Expr type: ' + expr.type);
+      print('Mappings: ' + expr.mappings.length);
+      print('First mapping axis: ' + expr.mappings[0].axis);
+      print('First mapping expr type: ' + expr.mappings[0].expr.type);
+      print('First mapping expr field: ' + expr.mappings[0].expr.field);
+    } catch (e) {
+      print('ERROR: ' + e.message);
+      print(e.stack);
+    }
+
+    // Test 2: Instance binding
+    print('\n=== Test 2: Instance Binding ===');
+    try {
+      const code = `foo<x> = 5`;
+      const ast = parse(code);
+      print('Parse OK');
+      print('Statement type: ' + ast.statements[0].type);
+      print('Statement name: ' + ast.statements[0].name);
+
+      const env = new Env();
+      const executor = new Executor(env);
+      executor.execute(ast);
+
+      print('Env instances has foo: ' + env.instances.has('foo'));
+      if (env.instances.has('foo')) {
+        const inst = env.instances.get('foo');
+        print('Instance type: ' + inst.type);
+        print('Instance outputs: ' + JSON.stringify(inst.outputs));
+        print('Instance expr type: ' + inst.expr.type);
+        print('Instance expr value: ' + inst.expr.v);
+      }
+    } catch (e) {
+      print('ERROR: ' + e.message);
+      print(e.stack);
+    }
+  </script>
+</body>
+</html>

@@ -828,7 +828,6 @@ code { color: #cbd5e1; }
 }
 
 #debugTabContent {
-  height: 160px;
   overflow-y: auto;
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.02);
@@ -842,6 +841,8 @@ code { color: #cbd5e1; }
 .debug-tab-pane {
   display: none;
   padding: 12px;
+  height: 100%;
+  box-sizing: border-box;
 }
 
 .debug-tab-pane.active {
@@ -1145,7 +1146,7 @@ code { color: #cbd5e1; }
   border: 1px solid #1a1e2a;
   border-radius: 6px;
   padding: 12px;
-  height: 140px;
+  height: 100%;
   overflow-y: auto;
   line-height: 1.5;
   color: #e8ecf1;

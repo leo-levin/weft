@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js"></script>
+</head>
+<body>
+  <pre id="output"></pre>
+  <script type="module">
+    import { parse } from './src/lang/parser-new.js';
+    
+    const code = `display(img@r(x ~ me@y, y ~ me@x))`;
+    const ast = parse(code);
+    const expr = ast.statements[0].positionalArgs[0];
+    
+    document.getElementById('output').textContent = JSON.stringify(expr, null, 2);
+  </script>
+</body>
+</html>

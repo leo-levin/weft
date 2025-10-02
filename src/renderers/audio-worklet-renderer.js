@@ -197,7 +197,11 @@ class AudioWorkletRenderer extends AbstractRenderer {
     }
 
     if (!this.audioContext || !this.audioContext.audioWorklet) {
-      logger.warn('Audio', 'AudioWorklet not available, skipping audio compilation');
+      await this.initialize();
+    }
+
+    if (!this.audioContext || !this.audioContext.audioWorklet) {
+      logger.warn('Audio', 'AudioWorklet not available after initialization, skipping audio compilation');
       return false;
     }
 
@@ -212,13 +216,16 @@ class AudioWorkletRenderer extends AbstractRenderer {
       logger.info('Audio', `Setup ${this.visualSamplerParams.length} visual samplers`);
     }
 
-    // Process statements and generate worklet code
-    await this.processAudioStatements();
+    await this.processAudioStatements(stmt);
+
+    // Increment processor count before generating code so the name matches
+    this.processorCount++;
 
     const processorCode = this.generateProcessorCode(stmt);
 
     if (processorCode === this.currentSourceCode) {
       logger.debug('Audio', 'Audio worklet code unchanged, skipping reload');
+      this.processorCount--; // Decrement back since we're not using it
       return true;
     }
 
@@ -244,7 +251,7 @@ class AudioWorkletRenderer extends AbstractRenderer {
   /**
    * Process audio statements and prepare compilation data
    */
-  async processAudioStatements() {
+  async processAudioStatements(playStmt) {
     this.audioStatements = this.filteredStatements.filter(stmt =>
       stmt.type !== 'PlayStmt' && this.hasAudioRoute(stmt)
     );
@@ -253,8 +260,17 @@ class AudioWorkletRenderer extends AbstractRenderer {
     this.jsCode = [];
     this.processExpressions.clear();
 
-    // Process load statements
-    await this.processAllLoadStatements(this.filteredStatements);
+    // Find variables actually used in audio context (including from play statement)
+    const statementsToScan = playStmt ? [...this.audioStatements, playStmt] : this.audioStatements;
+    const usedVars = this.findUsedVariables(statementsToScan);
+
+    // Filter load statements to only those whose instances are used in audio
+    const audioLoadStatements = this.filteredStatements.filter(stmt =>
+      stmt.type === 'CallInstance' && stmt.callee === 'load' && usedVars.has(stmt.inst)
+    );
+
+    // Process only audio-relevant load statements
+    await this.processAllLoadStatements(audioLoadStatements);
 
     // Process other audio statements
     this.audioStatements.forEach(stmt => {
@@ -273,7 +289,6 @@ class AudioWorkletRenderer extends AbstractRenderer {
     });
 
     // Collect cross-context parameters
-    const usedVars = this.findUsedVariables(this.audioStatements);
     this.crossContextManager.collectCrossContextParams(this.env.currentProgram || { statements: this.audioStatements }, usedVars);
   }
 
@@ -281,7 +296,6 @@ class AudioWorkletRenderer extends AbstractRenderer {
    * Load worklet module
    */
   async loadWorkletModule(processorCode) {
-    this.processorCount++;
     const blob = new Blob([processorCode], { type: 'application/javascript' });
     const processorUrl = URL.createObjectURL(blob);
 
@@ -289,6 +303,7 @@ class AudioWorkletRenderer extends AbstractRenderer {
       await this.audioContext.audioWorklet.addModule(processorUrl);
     } catch (error) {
       logger.error('Audio', 'Failed to load worklet module:', error);
+      console.error('🎵 Processor code that failed:', processorCode);
       throw error;
     }
 
@@ -302,6 +317,9 @@ class AudioWorkletRenderer extends AbstractRenderer {
     const processorName = `weft-audio-processor-${this.processorCount}`;
     this.workletNode = new AudioWorkletNode(this.audioContext, processorName);
     this.workletNode.connect(this.audioContext.destination);
+
+    // Log audio context state
+    console.log(`🎵 AudioContext state: ${this.audioContext.state}, sample rate: ${this.audioContext.sampleRate}`);
 
     // Setup message handling
     this.setupWorkletMessageHandler();
@@ -321,10 +339,8 @@ class AudioWorkletRenderer extends AbstractRenderer {
         logger.debug('Audio', 'Audio processor diagnostic:', event.data.message);
       } else if (event.data.type === 'test_response') {
         logger.debug('Audio', 'Audio processor responded to test:', event.data.message);
-      } else if (event.data.type === 'keepalive_response') {
-        if (event.data.processorFrame % 44100 === 0) {
-          logger.debug('Audio', 'Audio processor keep-alive: frame', event.data.processorFrame);
-        }
+      } else if (event.data.type === 'error') {
+        console.error(`🎵 Audio worklet error: ${event.data.message} in expression: ${event.data.expression}`);
       }
     };
   }
@@ -491,8 +507,17 @@ class AudioWorkletRenderer extends AbstractRenderer {
     // Get the audio expression
     const audioExpr = stmt.args[0];
 
-    // Generate JavaScript code for the audio expression
-    const audioCode = this.compileAudioExpression(audioExpr);
+    // Generate JavaScript code for the audio expression using the full compiler
+    const audioCode = this.compileToJS(audioExpr);
+    console.log('🎵 Compiled audio expression:', audioCode);
+    console.log('🎵 instanceOutputs:', Object.keys(this.instanceOutputs));
+
+    const sampleRate = this.audioContext?.sampleRate || 44100;
+
+    // Generate initialization code for visual sampler parameters
+    const visualParamInit = this.visualSamplerParams && this.visualSamplerParams.length > 0
+      ? this.visualSamplerParams.map(paramName => `          this.${paramName} = 0.5;`).join('\n')
+      : '';
 
     return `
       class WeftAudioProcessor extends AudioWorkletProcessor {
@@ -506,9 +531,10 @@ class AudioWorkletRenderer extends AbstractRenderer {
           this.bpm = 120;
           this.timesig_num = 4;
           this.timesig_den = 4;
+          this.sampleRate = ${sampleRate};
 
-          // Cross-context parameters
-          this.crossContextParams = {};
+          // Cross-context parameters - initialize visual samplers
+${visualParamInit}
 
           // Listen for parameter updates
           this.port.onmessage = (e) => {
@@ -520,7 +546,8 @@ class AudioWorkletRenderer extends AbstractRenderer {
               this.timesig_num = e.data.timesig_num;
               this.timesig_den = e.data.timesig_den;
             } else if (e.data.type === 'updateCrossContext') {
-              this.crossContextParams = e.data.params || {};
+              // Set cross-context params directly on this for compiled expressions
+              Object.assign(this, e.data.params || {});
             }
           };
         }
@@ -533,17 +560,18 @@ class AudioWorkletRenderer extends AbstractRenderer {
           const bufferSize = channel.length;
 
           for (let i = 0; i < bufferSize; i++) {
-            const sampleTime = this.sampleFrame / sampleRate;
+            const sampleTime = this.sampleFrame / this.sampleRate;
             const visualTime = (this.visualFrame % this.loop) / this.targetFps;
 
             // Create audio 'me' context
             const me = {
               time: sampleTime,
               frame: this.sampleFrame,
+              sample: this.sampleFrame,
               visualTime: visualTime,
               visualFrame: this.visualFrame % this.loop,
               abstime: (Date.now() - this.startTime) / 1000,
-              sampleRate: sampleRate
+              sampleRate: this.sampleRate
             };
 
             try {
@@ -551,13 +579,14 @@ class AudioWorkletRenderer extends AbstractRenderer {
               const sample = ${audioCode};
               channel[i] = Math.max(-1, Math.min(1, sample || 0));
             } catch (error) {
+              this.port.postMessage({ type: 'error', message: error.message, expression: '${audioCode.replace(/'/g, "\\'")}' });
               channel[i] = 0; // Silent fallback
             }
 
             this.sampleFrame++;
 
             // Advance visual frame based on sample rate and target FPS
-            if (this.sampleFrame % Math.floor(sampleRate / this.targetFps) === 0) {
+            if (this.sampleFrame % Math.floor(this.sampleRate / this.targetFps) === 0) {
               this.visualFrame++;
             }
           }
@@ -596,6 +625,7 @@ class AudioWorkletRenderer extends AbstractRenderer {
 
       case 'StrandAccess':
         if (expr.base === 'me' || (expr.base?.name === 'me')) {
+          console.log('🎵 Compiling StrandAccess:', { base: expr.base, out: expr.out, expr });
           return `me.${expr.out}`;
         }
         return '0';
@@ -879,101 +909,6 @@ class AudioWorkletRenderer extends AbstractRenderer {
     }, 100);
   }
 
-  // Compile WEFT expressions to Audio Worklet processor using route-aware filtering
-  async compile(playStatements) {
-    if (!playStatements || playStatements.length === 0) {
-      return;
-    }
-
-    try {
-      // Initialize AudioContext if needed
-      if (!this.audioContext) {
-        await this.initialize();
-      }
-
-      // Check if AudioWorklet is available
-      if (!this.audioContext || !this.audioContext.audioWorklet) {
-        this.warn('AudioWorklet not available, skipping audio compilation');
-        return;
-      }
-
-      this.audioStatements = [];
-      this.instanceOutputs = {};
-      this.crossContextParams = [];
-      this.jsCode = [];
-      this.processExpressions.clear();
-
-      const ast = this.env.currentProgram;
-      if (!ast) {
-        throw new Error('No AST available for compilation');
-      }
-
-      this.filterAudioStatements(ast.statements);
-
-      // Process all load statements (audio, image, video)
-      await this.processAllLoadStatements(ast.statements);
-      // Also process audio-specific load statements for backward compatibility
-      await this.processAudioLoadStatements(ast.statements);
-
-      // First collect cross-context params so instanceOutputs is populated
-      this.collectCrossContextParams(ast);
-
-      // Then process audio statements (this uses instanceOutputs for compilation)
-      this.processAudioStatements();
-
-      this.processorCount++;
-      const stmt = playStatements[0];
-      const processorCode = this.generateProcessorCode(stmt);
-
-      if (processorCode === this.currentSourceCode) {
-        return;
-      }
-      this.currentSourceCode = processorCode;
-      const blob = new Blob([processorCode], { type: 'application/javascript' });
-      const processorUrl = URL.createObjectURL(blob);
-
-      try {
-        await this.audioContext.audioWorklet.addModule(processorUrl);
-      } catch (error) {
-        console.error('🎵 Failed to load worklet module:', error);
-        throw error;
-      }
-
-      if (this.workletNode) {
-        this.workletNode.disconnect();
-        this.workletNode = null;
-      }
-
-      const processorName = `weft-audio-processor-${this.processorCount}`;
-      this.workletNode = new AudioWorkletNode(this.audioContext, processorName);
-      this.workletNode.connect(this.audioContext.destination);
-
-      this.workletNode.port.onmessage = (event) => {
-        if (event.data.type === 'diagnostic') {
-          this.log('Audio processor diagnostic:', event.data.message);
-        } else if (event.data.type === 'test_response') {
-          this.log('Audio processor responded to test:', event.data.message);
-        } else if (event.data.type === 'keepalive_response') {
-          if (event.data.processorFrame % 44100 === 0) {
-            this.log('Audio processor keep-alive: frame', event.data.processorFrame);
-          }
-        }
-      };
-
-      URL.revokeObjectURL(processorUrl);
-
-      this.compiledProcessor = stmt;
-      this.log('Audio compiled');
-
-      // Parameters will be updated by the timing system
-
-      this.updateCrossContextParams();
-
-    } catch (error) {
-      this.error('Audio compilation failed:', error);
-      throw error;
-    }
-  }
 
   filterAudioStatements(statements) {
     for (const stmt of statements) {
@@ -1516,209 +1451,6 @@ class AudioWorkletRenderer extends AbstractRenderer {
     );
 
     return methods.join('\n    ');
-  }
-
-  generateProcessorCode(playStmt) {
-    console.log('🔥 Audio: generateProcessorCode called with:', {
-      playStmt,
-      hasArgs: !!playStmt.args,
-      argsType: typeof playStmt.args,
-      argsLength: playStmt.args ? playStmt.args.length : 'N/A'
-    });
-
-    // Extract left and right channel expressions
-    let leftExpr = null;
-    let rightExpr = null;
-
-    if (!playStmt.args) {
-      console.error('❌ Audio: playStmt.args is undefined');
-      return null;
-    }
-
-    for (const arg of playStmt.args) {
-      if (arg.type === 'NamedArg') {
-        if (arg.name === 'audio') {
-          leftExpr = rightExpr = arg.expr;
-        } else if (arg.name === 'left') {
-          leftExpr = arg.expr;
-        } else if (arg.name === 'right') {
-          rightExpr = arg.expr;
-        }
-      } else {
-        // Positional argument - treat as mono audio
-        leftExpr = rightExpr = arg;
-        break; // Only take first positional argument
-      }
-    }
-
-    // Default to silence if no expressions
-    if (!leftExpr) leftExpr = { type: 'Num', v: 0 };
-    if (!rightExpr) rightExpr = { type: 'Num', v: 0 };
-
-    // Compile expressions to JavaScript
-    const leftCode = this.compileToJS(leftExpr);
-    const rightCode = this.compileToJS(rightExpr);
-
-    // Generate processor code using string concatenation to avoid template literal issues
-    const processorCode = [
-      'class WEFTAudioProcessor extends AudioWorkletProcessor {',
-      '  constructor() {',
-      '    super();',
-      '    this.frame = 0;  // Sample counter for continuous audio timing',
-      '    this.sampleRate = ' + (this.audioContext?.sampleRate || 44100) + ';',
-      '    ',
-      '    // Initialize timing parameters (will be updated from main thread)',
-      '    this.startTime = ' + this.timingParams.startTime + ';',
-      '    this.targetFps = ' + this.timingParams.targetFps + ';',
-      '    this.loop = ' + this.timingParams.loop + ';',
-      '    this.bpm = ' + this.timingParams.bpm + ';',
-      '    this.timesig_num = ' + this.timingParams.timesig_num + ';',
-      '    this.timesig_den = ' + this.timingParams.timesig_den + ';',
-      '',
-      '    // Initialize all audio variables',
-      '    ' + this.jsCode.join('\n    '),
-      '',
-      '    // Initialize cross-context parameters',
-      '    ' + this.generateCrossContextInit(),
-      '',
-      '    // Initialize audio buffer sampling methods',
-      '    ' + this.generateAudioBufferMethods(),
-      '',
-      '    // Handle messages from main thread',
-      '    this.port.onmessage = (event) => {',
-      '      if (event.data.type === \'test\') {',
-      '        this.port.postMessage({',
-      '          type: \'test_response\',',
-      '          message: \'Processor received: \' + event.data.message',
-      '        });',
-      '      } else if (event.data.type === \'keepalive\') {',
-      '        // Respond to keep-alive to confirm processor is running',
-      '        this.port.postMessage({',
-      '          type: \'keepalive_response\',',
-      '          timestamp: event.data.timestamp,',
-      '          processorFrame: this.frame',
-      '        });',
-      '      } else if (event.data.type === \'updateCrossContext\') {',
-      '        // Update cross-context parameter values',
-      '        Object.assign(this, event.data.params);',
-      '      } else if (event.data.type === \'updateTiming\') {',
-      '        // Update timing parameters from main thread',
-      '        this.startTime = event.data.startTime || this.startTime;',
-      '        this.targetFps = event.data.targetFps || this.targetFps;',
-      '        this.loop = event.data.loop || this.loop;',
-      '        this.bpm = event.data.bpm || this.bpm;',
-      '        this.timesig_num = event.data.timesig_num || this.timesig_num;',
-      '        this.timesig_den = event.data.timesig_den || this.timesig_den;',
-      '      }',
-      '    };',
-      '  }',
-      '',
-      '  process(inputs, outputs, parameters) {',
-      '    const output = outputs[0];',
-      '    if (!output || !output[0]) {',
-      '      this.port.postMessage({',
-      '        type: \'diagnostic\',',
-      '        message: \'No output channels available\'',
-      '      });',
-      '      return true;',
-      '    }',
-      '',
-      '    const leftChannel = output[0];',
-      '    const rightChannel = output[1] || output[0];',
-      '',
-      '    // Send diagnostic on first call',
-      '    if (this.frame === 0) {',
-      '      this.port.postMessage({',
-      '        type: \'diagnostic\',',
-      '        message: \'Audio processor started. Channels: \' + output.length + \', Buffer size: \' + leftChannel.length',
-      '      });',
-      '    }',
-      '',
-      '    // Debug: Log first few samples',
-      '    let debugSample = false;',
-      '    if (this.frame < 128) debugSample = true;',
-      '',
-      '    let nonZeroSamples = 0;',
-      '    let maxSample = 0;',
-      '',
-      '    // Calculate timing once per buffer for efficiency',
-      '    const currentTime = (Date.now() - this.startTime) / 1000;',
-      '    const visualFrame = Math.floor(currentTime * this.targetFps);',
-      '    const loopFrame = visualFrame % this.loop;',
-      '    const visualTime = loopFrame / this.targetFps;',
-      '    const beatsPerSecond = this.bpm / 60;',
-      '    const totalBeats = currentTime * beatsPerSecond;',
-      '    const beat = Math.floor(totalBeats) % this.timesig_num;',
-      '    const measure = Math.floor(totalBeats / this.timesig_num);',
-      '    ',
-      '    for (let i = 0; i < leftChannel.length; i++) {',
-      '      // Calculate continuous audio time for sample-accurate synthesis',
-      '      const sampleIndex = this.frame + i;',
-      '      const audioTime = sampleIndex / this.sampleRate;',
-      '      const loopDuration = this.loop / this.targetFps;',
-      '      const loopedAudioTime = audioTime % loopDuration;',
-      '      ',
-      '      const me = {',
-      '        time: loopedAudioTime,      // Continuous audio time for smooth synthesis',
-      '        abstime: currentTime,       // Absolute time since start',
-      '        sample: sampleIndex,        // Continuous audio sample counter',
-      '        frame: loopFrame,          // Visual frame (synced with GPU)',
-      '        absframe: visualFrame,     // Absolute visual frame',
-      '        beat: beat,                // Current beat in measure',
-      '        measure: measure           // Current measure',
-      '      };',
-      '',
-      '      // Evaluate stored expressions that depend on me',
-      this.generateProcessExpressions(),
-      '',
-      '      try {',
-      '        const leftSample = ' + leftCode + ';',
-      '        const rightSample = ' + rightCode + ';',
-      '',
-      '        // Debug logging for first few samples',
-      '        if (debugSample && i === 0) {',
-      '          this.port.postMessage({',
-      '            type: \'diagnostic\',',
-      '            message: \'Sample 0: L=\' + leftSample + \', test2_f=\' + this.test2_f',
-      '          });',
-      '        }',
-      '',
-      '        // Track statistics for diagnostics',
-      '        if (Math.abs(leftSample) > 0.001) nonZeroSamples++;',
-      '        maxSample = Math.max(maxSample, Math.abs(leftSample));',
-      '',
-      '        // Clamp and output samples',
-      '        leftChannel[i] = Math.max(-1, Math.min(1, isFinite(leftSample) ? leftSample : 0));',
-      '        rightChannel[i] = Math.max(-1, Math.min(1, isFinite(rightSample) ? rightSample : 0));',
-      '      } catch (error) {',
-      '        this.port.postMessage({',
-      '          type: \'diagnostic\',',
-      '          message: \'Error: \' + error.message',
-      '        });',
-      '        leftChannel[i] = 0;',
-      '        rightChannel[i] = 0;',
-      '      }',
-      '    }',
-      '',
-      '    // Increment frame counter by buffer size for continuous sample counting',
-      '    this.frame += leftChannel.length;',
-      '',
-      '    // Report statistics every 5 seconds for performance monitoring',
-      '    if (this.frame % 220500 === 0) {',
-      '      this.port.postMessage({',
-      '        type: \'diagnostic\',',
-      '        message: \'Audio stats: \' + nonZeroSamples + \'/\' + leftChannel.length + \' active samples, peak: \' + maxSample.toFixed(4)',
-      '      });',
-      '    }',
-      '',
-      '    return true;',
-      '  }',
-      '}',
-      '',
-      `registerProcessor('weft-audio-processor-${this.processorCount}', WEFTAudioProcessor);`
-    ];
-
-    return processorCode.join('\n');
   }
 
   generateTimeUpdates() {

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Test Tilde Syntax Parser</title>
+  <script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js"></script>
+</head>
+<body>
+  <h1>Testing Tilde (~) Syntax for StrandRemap</h1>
+  <pre id="output"></pre>
+
+  <script type="module">
+    import { parse } from './src/lang/parser-new.js';
+
+    const output = document.getElementById('output');
+
+    function test(label, code) {
+      output.textContent += `\n${label}:\n`;
+      output.textContent += `Code: ${code}\n`;
+      try {
+        const ast = parse(code);
+        output.textContent += `✓ Parsed successfully\n`;
+        output.textContent += `AST: ${JSON.stringify(ast, null, 2)}\n`;
+
+        // Check StrandRemap specifically
+        if (ast.statements && ast.statements[0] && ast.statements[0].type === 'DisplayStmt') {
+          const expr = ast.statements[0].positionalArgs[0];
+          if (expr.type === 'StrandRemap') {
+            output.textContent += `\nStrandRemap details:\n`;
+            output.textContent += `  base: ${expr.base}\n`;
+            output.textContent += `  strand: ${expr.strand}\n`;
+            output.textContent += `  mappings: ${JSON.stringify(expr.mappings, null, 4)}\n`;
+          }
+        }
+      } catch (e) {
+        output.textContent += `✗ Parse error: ${e.message}\n`;
+      }
+      output.textContent += '\n---\n';
+    }
+
+    // Test cases
+    test('Simple swap', 'display(img@r(x ~ me@y, y ~ me@x))');
+    test('3D mapping', 'display(noise@val(x ~ me@time, y ~ 0.5, z ~ me@x))');
+    test('Partial remap', 'display(img@r(x ~ me@y))');
+    test('Complex expression', 'display(img@r(x ~ me@y + 0.5, y ~ me@x * 2))');
+  </script>
+</body>
+</html>

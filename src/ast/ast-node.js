@@ -61,6 +61,10 @@ class BinaryExpr extends ASTNode {
   getChildren() {
     return [this.left, this.right];
   }
+
+  deconstruct() {
+    return [this.op, this.left, this.right];
+  }
 }
 
 class UnaryExpr extends ASTNode {
@@ -72,6 +76,10 @@ class UnaryExpr extends ASTNode {
 
   getChildren() {
     return [this.expr];
+  }
+
+  deconstruct() {
+    return [this.op, this.expr];
   }
 }
 
@@ -85,6 +93,10 @@ class CallExpr extends ASTNode {
   getChildren() {
     return [this.name, ...this.args];
   }
+
+  deconstruct() {
+    return [this.name, this.args];
+  }
 }
 
 class VarExpr extends ASTNode {
@@ -95,6 +107,10 @@ class VarExpr extends ASTNode {
 
   getChildren() {
     return [];
+  }
+
+  deconstruct() {
+    return [this.name];
   }
 }
 
@@ -107,6 +123,10 @@ class NumExpr extends ASTNode {
   getChildren() {
     return [];
   }
+
+  deconstruct() {
+    return [this.v];
+  }
 }
 
 class StrExpr extends ASTNode {
@@ -117,6 +137,10 @@ class StrExpr extends ASTNode {
 
   getChildren() {
     return [];
+  }
+
+  deconstruct() {
+    return [this.v];
   }
 }
 
@@ -129,6 +153,10 @@ class MeExpr extends ASTNode {
   getChildren() {
     return [];
   }
+
+  deconstruct() {
+    return [this.field];
+  }
 }
 
 class MouseExpr extends ASTNode {
@@ -139,6 +167,10 @@ class MouseExpr extends ASTNode {
 
   getChildren() {
     return [];
+  }
+
+  deconstruct() {
+    return [this.field];
   }
 }
 
@@ -151,6 +183,10 @@ class TupleExpr extends ASTNode {
   getChildren() {
     return this.items;
   }
+
+  deconstruct() {
+    return [this.items];
+  }
 }
 
 class IndexExpr extends ASTNode {
@@ -161,6 +197,10 @@ class IndexExpr extends ASTNode {
   }
 
   getChildren() {
+    return [this.base, this.index];
+  }
+
+  deconstruct() {
     return [this.base, this.index];
   }
 }
@@ -175,18 +215,27 @@ class StrandAccessExpr extends ASTNode {
   getChildren() {
     return [this.base, this.out];
   }
+
+  deconstruct() {
+    return [this.base, this.out];
+  }
 }
 
 class StrandRemapExpr extends ASTNode {
-  constructor(base, strand, coordinates) {
+  constructor(base, strand, mappings) {
     super('StrandRemap');
-    this.base = base;           // Instance name (e.g., 'img')
-    this.strand = strand;       // Strand name (e.g., 'r')
-    this.coordinates = coordinates;  // Array of coordinate expressions
+    this.base = base;           // VarExpr for instance (e.g., VarExpr('img'))
+    this.strand = strand;       // Strand name string (e.g., 'r')
+    this.mappings = mappings;   // Array of {axis: 'x', expr: ...} objects
   }
 
   getChildren() {
-    return [this.base, this.strand, ...this.coordinates];
+    // Extract all expression children from mappings
+    return [this.base, this.strand, ...this.mappings.map(m => m.expr)];
+  }
+
+  deconstruct() {
+    return [this.base, this.strand, this.mappings];
   }
 }
 
@@ -199,6 +248,10 @@ class IfExpr extends ASTNode {
   }
 
   getChildren() {
+    return [this.condition, this.thenExpr, this.elseExpr];
+  }
+
+  deconstruct() {
     return [this.condition, this.thenExpr, this.elseExpr];
   }
 }
@@ -214,6 +267,10 @@ class LetBinding extends ASTNode {
   getChildren() {
     return [this.expr];
   }
+
+  deconstruct() {
+    return [this.name, this.expr];
+  }
 }
 
 class Assignment extends ASTNode {
@@ -227,6 +284,10 @@ class Assignment extends ASTNode {
   getChildren() {
     return [this.expr];
   }
+
+  deconstruct() {
+    return [this.name, this.op, this.expr];
+  }
 }
 
 class NamedArg extends ASTNode {
@@ -239,6 +300,10 @@ class NamedArg extends ASTNode {
   getChildren() {
     return [this.value];
   }
+
+  deconstruct() {
+    return [this.name, this.value];
+  }
 }
 
 // Base class for all output statements (render, play, compute, display)
@@ -250,13 +315,17 @@ class OutputStatement extends ASTNode {
     this.positionalArgs = [];
     this.parameters = {};
     this.parseArgs(args);
-    
+
     // Determine execution route based on statement type
     this.route = this.determineRoute();
   }
 
   getChildren() {
     return this.args;
+  }
+
+  deconstruct() {
+    return [this.args];
   }
 
   parseArgs(args) {
@@ -282,28 +351,28 @@ class OutputStatement extends ASTNode {
 
   determineLegacyRoute() {
     const params = this.parameters;
-    
+
     // GPU route indicators - visual rendering parameters
     if (params.r || params.g || params.b || params.rgb ||
         params.width || params.height || params.fps) {
       return 'gpu';
     }
-    
+
     // Audio route indicators - audio synthesis parameters
     if (params.audio || params.left || params.right ||
         params.rate || params.channels) {
       return 'audio';
     }
-    
+
     // Default based on positional args (legacy support)
     if (this.positionalArgs.length >= 3) {
       return 'gpu';  // Assume r,g,b positional arguments
     }
-    
+
     if (this.positionalArgs.length === 1) {
       return 'audio';  // Assume single audio expression
     }
-    
+
     return 'cpu';  // Default fallback
   }
 }
@@ -337,6 +406,10 @@ class SpindleDef extends ASTNode {
   getChildren() {
     return [this.body];
   }
+
+  deconstruct() {
+    return [this.name, this.inputs, this.outputs, this.body];
+  }
 }
 
 class InstanceBinding extends ASTNode {
@@ -350,6 +423,10 @@ class InstanceBinding extends ASTNode {
   getChildren() {
     return [this.expr];
   }
+
+  deconstruct() {
+    return [this.name, this.outputs, this.expr];
+  }
 }
 
 class Program extends ASTNode {
@@ -360,6 +437,10 @@ class Program extends ASTNode {
 
   getChildren() {
     return this.statements;
+  }
+
+  deconstruct() {
+    return [this.statements];
   }
 }
 

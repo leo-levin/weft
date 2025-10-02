@@ -1,8 +1,4 @@
 // Logger system extracted from runtime.js
-
-/**
- * Centralized logging system with UI integration and filtering capabilities
- */
 export class Logger {
   constructor() {
     this.logs = [];

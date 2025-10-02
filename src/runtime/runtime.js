@@ -389,30 +389,25 @@ function evalExprToStrand(node, env) {
             return 0;
           }
 
-          // 2. Evaluate coordinate expressions to get remapped coordinates
-          const coords = node.coordinates.map(coordExpr => {
+          // 2. Build remapped me object from axis mappings
+          // node.mappings = [{axis: 'x', expr: ...}, {axis: 'y', expr: ...}]
+          const remappedMe = { ...me };
+
+          for (const mapping of node.mappings) {
+            const axisName = mapping.axis;
             try {
-              const coordStrand = evalExprToStrand(coordExpr, env);
-              return coordStrand.evalAt(me, scope);
+              const coordStrand = evalExprToStrand(mapping.expr, env);
+              const axisValue = coordStrand.evalAt(me, scope);
+
+              // Clamp coordinates to reasonable bounds
+              remappedMe[axisName] = Math.max(0, Math.min(1, isFinite(axisValue) ? axisValue : 0));
             } catch (error) {
-              logger.warn('Runtime', `Error evaluating coordinate in strand remap: ${error.message}`);
-              return 0;
+              logger.warn('Runtime', `Error evaluating '${axisName}' mapping in strand remap: ${error.message}`);
+              remappedMe[axisName] = me[axisName] || 0;
             }
-          });
+          }
 
-          // 3. Create new evaluation context with remapped coordinates
-          const remappedMe = {
-            ...me,
-            x: coords[0] !== undefined ? coords[0] : me.x,
-            y: coords[1] !== undefined ? coords[1] : me.y,
-            z: coords[2] !== undefined ? coords[2] : (me.z !== undefined ? me.z : 0)
-          };
-
-          // Clamp coordinates to reasonable bounds to prevent issues
-          remappedMe.x = Math.max(0, Math.min(1, isFinite(remappedMe.x) ? remappedMe.x : 0));
-          remappedMe.y = Math.max(0, Math.min(1, isFinite(remappedMe.y) ? remappedMe.y : 0));
-
-          // 4. Evaluate source strand with new coordinates
+          // 3. Evaluate source strand with new coordinates
           if(sourceStrand.kind === 'strand') {
             return sourceStrand.evalAt(remappedMe, scope);
           }

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Render Graph Test Suite</title>
+  <script src="https://unpkg.com/ohm-js@16/dist/ohm.min.js"></script>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .test { margin: 20px 0; padding: 10px; border: 1px solid #ccc; }
+    .pass { background: #d4edda; }
+    .fail { background: #f8d7da; }
+    pre { background: #f5f5f5; padding: 10px; overflow-x: auto; }
+    h2 { margin-top: 30px; }
+  </style>
+</head>
+<body>
+  <h1>Render Graph Test Suite</h1>
+  <div id="results"></div>
+
+  <script type="module">
+    import { parse } from './src/lang/parser-new.js';
+    import { Env, Executor } from './src/runtime/runtime-new.js';
+    import { RenderGraph } from './src/renderers/render-graph.js';
+
+    const results = document.getElementById('results');
+
+    function test(name, code, assertions) {
+      const div = document.createElement('div');
+      div.className = 'test';
+
+      try {
+        // Parse
+        const ast = parse(code);
+
+        // Execute
+        const env = new Env();
+        const executor = new Executor(env);
+        executor.execute(ast);
+
+        // Build graph
+        const graph = new RenderGraph(ast, env);
+        const result = graph.build();
+
+        // Run assertions
+        let allPassed = true;
+        const assertionResults = [];
+
+        for (const [desc, check] of Object.entries(assertions)) {
+          try {
+            const passed = check(result, ast, env);
+            assertionResults.push(`${passed ? '[PASS]' : '[FAIL]'} ${desc}`);
+            if (!passed) allPassed = false;
+          } catch (e) {
+            assertionResults.push(`[FAIL] ${desc}: ${e.message}`);
+            allPassed = false;
+          }
+        }
+
+        div.className += allPassed ? ' pass' : ' fail';
+        // Escape HTML in code display
+        const escapedCode = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        div.innerHTML = `
+          <h3>${allPassed ? '[PASS]' : '[FAIL]'} ${name}</h3>
+          <pre>${escapedCode}</pre>
+          <div>${assertionResults.join('<br>')}</div>
+        `;
+      } catch (e) {
+        div.className += ' fail';
+        const escapedCode = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        div.innerHTML = `
+          <h3>[ERROR] ${name}</h3>
+          <pre>${escapedCode}</pre>
+          <div style="color: red;">Error: ${e.message}</div>
+          <pre>${e.stack}</pre>
+        `;
+      }
+
+      results.appendChild(div);
+    }
+
+    // Test 1: Simple instance with single output
+    test('Test 1: Single Instance',
+      `color<r> = me@x
+       display(color@r)`,
+      {
+        'Graph has 1 node': (result) => result.nodes.size === 1,
+        'Node is named "color"': (result) => result.nodes.has('color'),
+        'color has 1 output': (result) => {
+          const node = result.nodes.get('color');
+          return node.outputs.size === 1;
+        },
+        'color output "r" exists': (result) => {
+          const node = result.nodes.get('color');
+          return node.outputs.has('r');
+        },
+        'color depends on "me"': (result) => {
+          const node = result.nodes.get('color');
+          return node.deps.has('me');
+        },
+        'color output "r" is required': (result) => {
+          const node = result.nodes.get('color');
+          return node.requiredOutputs.has('r');
+        },
+        'Execution order includes "color"': (result) => {
+          return result.execOrder.includes('color');
+        }
+      }
+    );
+
+    // Test 2: Multiple outputs on same instance
+    test('Test 2: Multiple Outputs',
+      `color<r> = me@x
+       color<g> = me@y
+       color<b> = 0
+       display(color@r + color@g)`,
+      {
+        'Graph has 1 node': (result) => result.nodes.size === 1,
+        'color has 3 outputs': (result) => {
+          const node = result.nodes.get('color');
+          return node.outputs.size === 3;
+        },
+        'All outputs exist': (result) => {
+          const node = result.nodes.get('color');
+          return node.outputs.has('r') && node.outputs.has('g') && node.outputs.has('b');
+        },
+        'Only r and g are required': (result) => {
+          const node = result.nodes.get('color');
+          return node.requiredOutputs.has('r') &&
+                 node.requiredOutputs.has('g') &&
+                 !node.requiredOutputs.has('b');
+        }
+      }
+    );
+
+    // Test 3: Dependency chain
+    test('Test 3: Dependency Chain',
+      `base<x> = me@x
+       derived<y> = base@x * 2
+       display(derived@y)`,
+      {
+        'Graph has 2 nodes': (result) => result.nodes.size === 2,
+        'base depends on me': (result) => {
+          const node = result.nodes.get('base');
+          return node.deps.has('me');
+        },
+        'derived depends on base': (result) => {
+          const node = result.nodes.get('derived');
+          return node.deps.has('base');
+        },
+        'Execution order is correct': (result) => {
+          const order = result.execOrder;
+          const baseIdx = order.indexOf('base');
+          const derivedIdx = order.indexOf('derived');
+          return baseIdx < derivedIdx;
+        }
+      }
+    );
+
+    // Test 4: StrandRemap dependencies
+    test('Test 4: StrandRemap Dependencies',
+      `img<r> = me@x
+       display(img@r(x ~ me@y, y ~ me@x))`,
+      {
+        'Graph has 1 node': (result) => result.nodes.size === 1,
+        'img depends on me': (result) => {
+          const node = result.nodes.get('img');
+          return node.deps.has('me');
+        },
+        'img output r is required': (result) => {
+          const node = result.nodes.get('img');
+          return node.requiredOutputs.has('r');
+        }
+      }
+    );
+
+    // Test 5: Complex expression dependencies
+    test('Test 5: Complex Expression',
+      `a<x> = me@x
+       b<y> = me@y
+       c<z> = a@x + b@y * 2
+       display(c@z)`,
+      {
+        'Graph has 3 nodes': (result) => result.nodes.size === 3,
+        'c depends on a and b': (result) => {
+          const node = result.nodes.get('c');
+          return node.deps.has('a') && node.deps.has('b');
+        },
+        'a and b depend on me': (result) => {
+          return result.nodes.get('a').deps.has('me') &&
+                 result.nodes.get('b').deps.has('me');
+        },
+        'Execution order valid': (result) => {
+          const order = result.execOrder;
+          const aIdx = order.indexOf('a');
+          const bIdx = order.indexOf('b');
+          const cIdx = order.indexOf('c');
+          return aIdx < cIdx && bIdx < cIdx;
+        }
+      }
+    );
+
+    // Test 6: If expression dependencies
+    test('Test 6: If Expression',
+      `cond<x> = me@x
+       tval<y> = 1
+       fval<z> = 0
+       result<r> = if cond@x then tval@y else fval@z
+       display(result@r)`,
+      {
+        'Graph has 4 nodes': (result) => result.nodes.size === 4,
+        'result depends on all three': (result) => {
+          const node = result.nodes.get('result');
+          return node.deps.has('cond') &&
+                 node.deps.has('tval') &&
+                 node.deps.has('fval');
+        }
+      }
+    );
+
+    // Test 7: No dependencies (constants only)
+    test('Test 7: No Dependencies',
+      `const<x> = 5
+       display(const@x)`,
+      {
+        'Graph has 1 node': (result) => result.nodes.size === 1,
+        'const has no dependencies': (result) => {
+          const node = result.nodes.get('const');
+          return node.deps.size === 0;
+        },
+        'const is first in execution order': (result) => {
+          return result.execOrder[0] === 'const';
+        }
+      }
+    );
+
+    // Test 8: Circular dependency detection
+    function testError(name, code, expectedError) {
+      const div = document.createElement('div');
+      div.className = 'test';
+
+      try {
+        const ast = parse(code);
+        const env = new Env();
+        const executor = new Executor(env);
+        executor.execute(ast);
+
+        const graph = new RenderGraph(ast, env);
+        graph.build();
+
+        // If we get here, no error was thrown
+        div.className += ' fail';
+        const escapedCode = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        div.innerHTML = `
+          <h3>[FAIL] ${name}</h3>
+          <pre>${escapedCode}</pre>
+          <div style="color: red;">Expected error but graph built successfully!</div>
+        `;
+      } catch (e) {
+        const matchesExpected = e.message.includes(expectedError);
+        div.className += matchesExpected ? ' pass' : ' fail';
+        const escapedCode = code.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        div.innerHTML = `
+          <h3>${matchesExpected ? '[PASS]' : '[FAIL]'} ${name}</h3>
+          <pre>${escapedCode}</pre>
+          <div>Error (as expected): ${e.message}</div>
+          ${!matchesExpected ? `<div style="color: red;">Expected error containing: ${expectedError}</div>` : ''}
+        `;
+      }
+
+      results.appendChild(div);
+    }
+
+    // Note: WEFT grammar doesn't allow circular definitions easily
+    // This would require runtime evaluation, not parse-time
+
+    // Test 9: Tuple expression dependencies
+    test('Test 9: Tuple Dependencies',
+      `r<x> = me@x
+       g<y> = me@y
+       b<z> = 0
+       display((r@x, g@y, b@z))`,
+      {
+        'Graph has 3 nodes': (result) => result.nodes.size === 3,
+        'All required outputs marked': (result) => {
+          return result.nodes.get('r').requiredOutputs.has('x') &&
+                 result.nodes.get('g').requiredOutputs.has('y') &&
+                 result.nodes.get('b').requiredOutputs.has('z');
+        }
+      }
+    );
+
+    // Test 10: Call expression dependencies
+    test('Test 10: Call Expression',
+      `val<x> = me@x
+       display(sin(val@x))`,
+      {
+        'Graph has 1 node': (result) => result.nodes.size === 1,
+        'val depends on me': (result) => {
+          return result.nodes.get('val').deps.has('me');
+        },
+        'val@x is required': (result) => {
+          return result.nodes.get('val').requiredOutputs.has('x');
+        }
+      }
+    );
+
+    console.log('All render graph tests completed!');
+  </script>
+</body>
+</html>

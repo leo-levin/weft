@@ -1,0 +1,10 @@
+me<width> = 2000
+me<height> = 2000
+
+load("assets/flowers.jpg")::img<r,g,b>
+#slider test<t> = 0,0.4,0 "disp"
+img2<r> = img@r(me@x-0.2+test@t, me@y)
+img2<g> = img@g(me@x, me@y+test@t-0.2)
+
+display(img2@r,img2@g,img@b)
+play(sin(me@time *900))
