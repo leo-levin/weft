@@ -1,6 +1,6 @@
 import { RenderGraph } from './render-graph.js'
 
-export class Orchestrator {
+export class Coordinator {
   constructor(ast, env) {
     this.ast = ast;
     this.env = env;
@@ -25,7 +25,7 @@ export class Orchestrator {
     this.graph = new RenderGraph(this.ast, this.env);
     const graphResult = this.graph.build();
 
-    console.log('[Orchestrator] Render graph built:', {
+    console.log('[Coordinator] Render graph built:', {
         nodes: graphResult.nodes.size,
         execOrder: graphResult.execOrder
     });
@@ -41,7 +41,7 @@ export class Orchestrator {
     this.graph.tagContexts(this.outputStatements);
 
     const contextsNeeded = this.graph.getContextsNeeded();
-    console.log('[Orchestrator] Contexts needed:',Array.from(contextsNeeded));
+    console.log('[Coordinator] Contexts needed:',Array.from(contextsNeeded));
 
     if (contextsNeeded.has('visual')) {
       this.activeRenderers.add('gpu');
@@ -58,27 +58,27 @@ export class Orchestrator {
     if (this.activeRenderers.has('gpu') && this.gpuRenderer) {
       compilePromises.push(
         this.gpuRenderer.compile(this.ast, this.env)
-        .then(() => console.log('[Orchestrator] GPU renderer compiled'))
+        .then(() => console.log('[Coordinator] GPU renderer compiled'))
       );
     }
 
     if (this.activeRenderers.has('cpu') && this.cpuRenderer) {
       compilePromises.push(
         this.cpuRenderer.compile(this.ast, this.env)
-        .then(() => console.log('[Orchestrator] CPU renderer compiled'))
+        .then(() => console.log('[Coordinator] CPU renderer compiled'))
       );
     }
 
     if (this.activeRenderers.has('audio') && this.audioRenderer) {
       compilePromises.push(
         this.audioRenderer.compile(this.ast, this.env)
-        .then(() => console.log('[Orchestrator] Audio renderer compiled'))
+        .then(() => console.log('[Coordinator] Audio renderer compiled'))
       );
     }
 
     await Promise.all(compilePromises);
 
-    console.log('[Orchestrator] Compilation complete');
+    console.log('[Coordinator] Compilation complete');
   }
 
   render() {

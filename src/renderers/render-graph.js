@@ -252,18 +252,27 @@ export class RenderGraph {
       }
     }
 
-    if (this.execOrder.length !== this.nodes.size) {
+    if (this.execOrder.length !== this.nodes.size) { 
       throw new Error("Circular dependency in render graph!");
     }
   }
-
-  tagContexts(graphResult){
-      for (const stmt of outputStmts) {
+  
+  tagContexts(outputStmts) {
+    // Tag instances with contexts based on output statements
+    for (const stmt of outputStmts) {
       const context = this.getStmtContext(stmt);
       if (!context) continue;
 
       for (const expr of stmt.args) {
         this.tagDepsInExpr(expr, context, this.nodes);
+      }
+    }
+
+    // Log tagging results
+    console.log('[RenderGraph] Context tagging complete:');
+    for (const [name, node] of this.nodes) {
+      if (node.contexts.size > 0) {
+        console.log(`  ${name}: ${Array.from(node.contexts).join(', ')}`);
       }
     }
   }
@@ -286,7 +295,7 @@ export class RenderGraph {
     if (!expr) return;
 
     match(expr,
-      inst(StrandAccessExpr, _, _), (b,s) => {
+      inst(StrandAccessExpr, _, _), (base, strand) => {
         if (base.type === 'Var') {
           const instName = base.name;
           if(nodes.has(instName)) {
@@ -296,29 +305,29 @@ export class RenderGraph {
         }
       },
 
-      inst(StrandRemapExpr, _, _, _), (b,s,ms) => {
+      inst(StrandRemapExpr, _, _, _), (base, strand, mappings) => {
         if (base.type === 'Var') {
           const instName = base.name;
           if (nodes.has(instName)) {
             nodes.get(instName).contexts.add(context);
-            this.tagInstanceDeps(instName, context,nodes);
+            this.tagInstDeps(instName, context, nodes);
           }
         }
-        for (const map of ms) {
-          this.tagDepsInExpr(map, context, nodes);
+        for (const mapping of mappings) {
+          this.tagDepsInExpr(mapping.expr, context, nodes);
         }
       },
 
-      inst(BinaryExpr, _, _, _), (op, left, right) => {
+      inst(BinaryExpr, _, _, _), (_op, left, right) => {
         this.tagDepsInExpr(left, context, nodes);
         this.tagDepsInExpr(right, context, nodes);
       },
 
-      inst(UnaryExpr, _, _), (op, innerExpr) => {
+      inst(UnaryExpr, _, _), (_op, innerExpr) => {
         this.tagDepsInExpr(innerExpr, context, nodes);
       },
 
-      inst(CallExpr, _, _), (name, args) => {
+      inst(CallExpr, _, _), (_name, args) => {
         for (const arg of args) {
           this.tagDepsInExpr(arg, context, nodes);
         }
