@@ -1,5 +1,21 @@
 import { RenderGraph } from './render-graph.js'
 
+
+/*
+Future renderers could include:
+- Metal
+- NativeAudio
+- 3d point cloud shit?
+- NURBS?
+- DataExport (to CSV / JSON)
+- VideoExport (encode to video file)
+- OSC/NDI
+- MIDI
+- Web Socket
+- uhhhhhhhF
+*/
+
+
 export class Coordinator {
   constructor(ast, env) {
     this.ast = ast;

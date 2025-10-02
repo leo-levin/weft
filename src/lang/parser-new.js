@@ -10,7 +10,6 @@ const grammar = ohm.grammar(`
   Weft {
     Program = Statement*
 
-    // MECE Statement Categories
     Statement = Definition
               | Binding
               | SideEffect

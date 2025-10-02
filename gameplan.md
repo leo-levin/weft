@@ -34,656 +34,6 @@
 - Testing & examples: ~300 lines
 - Utilities cleanup: ~100 lines
 
----
-
-## SHARED BASE CLASS STRATEGY
-
-**Keep it thin.** One abstract class with lifecycle only:
-
-```javascript
-// base-renderer.js (~100 lines, YOU WRITE)
-export class BaseRenderer {
-  constructor(env, name) {
-    this.env = env;
-    this.name = name;
-    this.isRunning = false;
-  }
-
-  // Lifecycle (abstract methods)
-  async init() { throw new Error('implement init'); }
-  async compile(ast) { throw new Error('implement compile'); }
-  render() { throw new Error('implement render'); }
-  cleanup() { /* optional */ }
-
-  // Shared utilities
-  filterStatements(ast, type) {
-    return ast.statements.filter(s => s.type === type);
-  }
-
-  log(msg) {
-    console.log(`[${this.name}] ${msg}`);
-  }
-}
-```
-
-**Why this works:**
-- Just lifecycle + minimal helpers
-- No parameter systems, no cross-context managers
-- Each renderer handles its own compilation details
-
----
-
-## PHASE 1: LANGUAGE CORE
-
-### 1.1 Parser (~400 lines)
-
-**File:** `src/lang/parser-new.js`
-
-**Current issues:**
-- External grammar loading (unnecessary complexity)
-- Route tagging mixed with parsing (separate concerns)
-- 631 lines for what should be 400
-
-**What YOU write:**
-
-```javascript
-// parser-new.js
-import { ASTNode, BinaryExpr, ... } from '../ast/ast-node.js';
-
-const ohm = window.ohm;
-
-// Inline grammar (no external loading)
-const grammar = ohm.grammar(`
-  Weft {
-    Program = Statement*
-
-    Statement = Definition | Binding | Mutation | SideEffect
-
-    Definition = SpindleDef
-    SpindleDef = kw<"spindle"> ident "(" Params ")" "::" OutputSpec Block
-
-    Binding = LetBinding | InstanceBinding
-    LetBinding = kw<"let"> ident "=" Expr
-    InstanceBinding =
-      | ident OutputSpec "=" Expr  -- direct
-      | ident "(" Args ")" "::" ident OutputSpec  -- call
-
-    Mutation = Assignment
-    Assignment = ident AssignOp Expr
-    AssignOp = "=" | "+=" | "-=" | "*=" | "/="
-
-    SideEffect = DisplayStmt | RenderStmt | PlayStmt | ComputeStmt
-    DisplayStmt = kw<"display"> "(" StmtArgs ")"
-    RenderStmt = kw<"render"> "(" StmtArgs ")"
-    PlayStmt = kw<"play"> "(" StmtArgs ")"
-    ComputeStmt = kw<"compute"> "(" StmtArgs ")"
-
-    // ... rest of grammar (copy from existing, it's already clean)
-  }
-`);
-
-const semantics = grammar.createSemantics().addOperation('toAST', {
-  Program(stmts) {
-    return new Program(stmts.toAST());
-  },
-
-  SpindleDef(kw, name, lp, params, rp, sep, outputs, block) {
-    return new SpindleDef(
-      name.sourceString,
-      params.asIteration().toAST(),
-      outputs.toAST(),
-      block.toAST()
-    );
-  },
-
-  // ... continue for each grammar rule
-  // Focus on building clean AST nodes
-  // NO route tagging here
-});
-
-export class Parser {
-  parse(source) {
-    const match = grammar.match(source);
-    if (match.failed()) {
-      throw new Error(match.message);
-    }
-    return semantics(match).toAST();
-  }
-}
-
-export function parse(source) {
-  return new Parser().parse(source);
-}
-```
-
-**Your tasks:**
-1. Copy grammar from current parser (it's already good)
-2. Rewrite semantic actions to build AST cleanly
-3. Remove all route tagging logic
-4. Remove external grammar loading
-5. Test: `parse("display(me@x)")` should return clean AST
-
-**Complete Semantic Actions Reference:**
-
-See the existing parser.js for exact grammar. Here's every semantic action you need:
-
-**A. Program & Top-Level**
-- `Program(stmts)` → `new Program(stmts.asIteration().toAST())`
-
-**B. Statements**
-- `SpindleDef(_kw, name, _lp, params, _rp, _dc, outputs, block)` → `new SpindleDef(name.toAST(), params.asIteration().toAST(), outputs.toAST(), block.toAST())`
-- `LetBinding(_let, name, _eq, expr)` → `new LetBinding(name.toAST(), expr.toAST())`
-- `InstanceBinding_direct(name, _sp1, outputs, _sp2, _eq, _sp3, expr)` → `new InstanceBinding(name.toAST(), outputs.toAST(), expr.toAST())`
-- `InstanceBinding_call(func, _lp, args, _rp, _dc, inst, outputs)` → Extract call info, create `InstanceBinding`
-- `Assignment(name, op, expr)` → `new Assignment(name.toAST(), op.sourceString, expr.toAST())`
-- `DisplayStmt(_kw, _lp, args, _rp)` → `new DisplayStmt(args.asIteration().toAST())`
-- `RenderStmt(_kw, _lp, args, _rp)` → `new RenderStmt(args.asIteration().toAST())`
-- `PlayStmt(_kw, _lp, args, _rp)` → `new PlayStmt(args.asIteration().toAST())`
-- `ComputeStmt(_kw, _lp, args, _rp)` → `new ComputeStmt(args.asIteration().toAST())`
-
-**C. Statement Arguments**
-- `StmtArg_named(name, _colon, expr)` → `new NamedArg(name.toAST(), expr.toAST())`
-- `StmtArg_positional(expr)` → `expr.toAST()`
-
-**D. Blocks & Control**
-- `Block(_lb, stmts, _rb)` → `{ type: 'Block', body: stmts.asIteration().toAST() }`
-- `ForLoop(_for, v, _in, _lp, start, _to, end, _rp, block)` → `{ type: 'For', v: v.toAST(), start: start.toAST(), end: end.toAST(), body: block.toAST() }`
-
-**E. Expressions - Logical & Comparison**
-- `IfExpr(_if, cond, _then, t, _else, e)` → `new IfExpr(cond.toAST(), t.toAST(), e.toAST())`
-- `LogicalExpr_or(left, _op, right)` → `new BinaryExpr('OR', left.toAST(), right.toAST())`
-- `LogicalExpr_and(left, _op, right)` → `new BinaryExpr('AND', left.toAST(), right.toAST())`
-- `ComparisonExpr_compare(left, op, right)` → `new BinaryExpr(op.sourceString.trim(), left.toAST(), right.toAST())`
-
-**F. Expressions - Arithmetic**
-- `AddExpr_addsub(left, op, right)` → `new BinaryExpr(op.sourceString.trim(), left.toAST(), right.toAST())`
-- `MulExpr_muldiv(left, op, right)` → `new BinaryExpr(op.sourceString.trim(), left.toAST(), right.toAST())`
-- `PowerExpr_power(left, _op, right)` → `new BinaryExpr('^', left.toAST(), right.toAST())`
-
-**G. Expressions - Unary**
-- `UnaryExpr_neg(_op, expr)` → `new UnaryExpr('-', expr.toAST())`
-- `UnaryExpr_not(_op, expr)` → `new UnaryExpr('NOT', expr.toAST())`
-
-**H. Expressions - Primary (CRITICAL)**
-- `PrimaryExpr_paren(_lp, expr, _rp)` → `expr.toAST()` (unwrap)
-- `PrimaryExpr_tuple(_lp, items, _rp)` → `items.length === 1 ? items.asIteration().toAST()[0] : new TupleExpr(items.asIteration().toAST())`
-- `PrimaryExpr_index(base, _lb, index, _rb)` → `new IndexExpr(base.toAST(), index.toAST())`
-- `PrimaryExpr_strandRemap(base, _at, strand, _lp, coords, _rp)` → `new StrandRemapExpr(base.toAST(), strand.toAST(), coords.asIteration().toAST())` ⚠️ **CRITICAL**
-- `PrimaryExpr_strand(base, _at, output)` → Check if base is 'me', return `new MeExpr(output.toAST())`, else `new StrandAccessExpr(base.toAST(), output.toAST())`
-- `PrimaryExpr_call(func, _lp, args, _rp)` → `new CallExpr(func.toAST(), args.asIteration().toAST())`
-- `PrimaryExpr_bundle(_lt, items, _gt)` → `{ type: 'Bundle', items: items.asIteration().toAST() }`
-- `PrimaryExpr_mouse(_mouse, _at, field)` → `new MouseExpr(field.toAST())`
-- `PrimaryExpr_var(name)` → `new VarExpr(name.toAST())`
-
-**I. Terminals**
-- `ident(_letter, _rest, _space)` → `this.sourceString.trim()` (returns **string**, not AST)
-- `number(_digits, _space)` → `new NumExpr(parseFloat(this.sourceString))`
-- `string(_q1, chars, _q2, _space)` → `new StrExpr(chars.sourceString)`
-
-**J. Helpers**
-- `OutputSpec(_lt, items, _gt)` → `items.asIteration().toAST()` (array of strings)
-- `BundleOrExpr_bundle(_lt, items, _gt)` → `{ type: 'Bundle', items: items.asIteration().toAST() }`
-- `BundleOrExpr_regular(expr)` → `expr.toAST()`
-
-**K. Delegation (Pass-Through)**
-All these just return `node.toAST()`:
-- `Expr`, `LogicalExpr`, `ComparisonExpr`, `ArithExpr`, `AddExpr`, `MulExpr`, `PowerExpr`, `UnaryExpr`, `PrimaryExpr`
-
-**Key Patterns:**
-1. Use `.asIteration().toAST()` for **any** grammar rule with `*`, `+`, `?`, or `listOf`
-2. Use `.sourceString` for terminals (ident returns string)
-3. Use `.toAST()` for child nodes to recursively build AST
-4. Special case: `me@field` → `MeExpr`, not `StrandAccessExpr`
-5. Special case: Single-item tuple → unwrap, don't create `TupleExpr`
-
-**Delete after:**
-- `src/lang/tagging.js` (276 lines) — route tagging moves to renderers
-
----
-
-### 1.2 Runtime (~430 lines)
-
-**File:** `src/runtime/runtime-new.js`
-
-**Current issues:**
-- ParameterStrand in separate file (over-engineered)
-- Complex strand system (just use closures)
-- 1536 lines for what should be 430
-
-**What YOU write:**
-
-```javascript
-// runtime-new.js
-import { clamp, isNum } from '../utils/math.js';
-import { Sampler } from './media/sampler.js';
-
-export class Env {
-  constructor() {
-    // Core state
-    this.spindles = new Map();    // spindle definitions
-    this.instances = new Map();   // runtime instances
-    this.vars = new Map();        // let bindings
-
-    // Canvas/display
-    this.resW = 300;
-    this.resH = 300;
-    this.frame = 0;
-    this.startTime = Date.now();
-    this.targetFps = 30;
-
-    // Input
-    this.mouse = { x: 0.5, y: 0.5 };
-
-    // Audio
-    this.audio = { element: null, intensity: 0 };
-
-    // Musical timing
-    this.loop = 600;
-    this.bpm = 120;
-    this.timesig_num = 4;
-    this.timesig_den = 4;
-
-    // Media storage
-    this.media = new Map();  // Store loaded Samplers
-
-    // Built-in instances
-    this.createBuiltins();
-  }
-
-  createBuiltins() {
-    // "me" instance with time/space accessors
-    const me = {
-      // Spatial (normalized 0-1)
-      x: () => this.currentX ?? 0.5,
-      y: () => this.currentY ?? 0.5,
-
-      // Time
-      time: () => ((this.frame % this.loop) / this.targetFps),
-      frame: () => (this.frame % this.loop),
-      abstime: () => ((Date.now() - this.startTime) / 1000),
-      absframe: () => this.frame,
-
-      // Display
-      width: () => this.resW,
-      height: () => this.resH,
-      fps: () => this.targetFps,
-      loop: () => this.loop,
-
-      // Musical
-      bpm: () => this.bpm,
-      beat: () => {
-        const absTime = (Date.now() - this.startTime) / 1000;
-        return Math.floor(absTime * (this.bpm / 60)) % this.timesig_num;
-      },
-      measure: () => {
-        const absTime = (Date.now() - this.startTime) / 1000;
-        return Math.floor(absTime * (this.bpm / 60) / this.timesig_num);
-      }
-    };
-
-    this.instances.set('me', me);
-  }
-
-  // Simple parameter support (no ParameterStrand class needed)
-  setParam(name, value) {
-    if (!this.instances.has(name)) {
-      this.instances.set(name, {});
-    }
-    const inst = this.instances.get(name);
-    inst.value = () => value;  // Just a closure
-  }
-
-  getParam(name) {
-    const inst = this.instances.get(name);
-    return inst?.value ? inst.value() : 0;
-  }
-
-  // Media loading support
-  async loadMedia(path, instanceName) {
-    const sampler = new Sampler();
-    await sampler.load(path);
-    this.media.set(instanceName, sampler);
-    return sampler;
-  }
-
-  getMedia(instanceName) {
-    return this.media.get(instanceName);
-  }
-}
-
-export class Executor {
-  constructor(env) {
-    this.env = env;
-  }
-
-  execute(ast) {
-    for (const stmt of ast.statements) {
-      this.executeStmt(stmt);
-    }
-  }
-
-  executeStmt(stmt) {
-    switch (stmt.type) {
-      case 'SpindleDef':
-        this.env.spindles.set(stmt.name, stmt);
-        break;
-
-      case 'LetBinding':
-        // Store variable (evaluate later during rendering)
-        this.env.vars.set(stmt.name, stmt.expr);
-        break;
-
-      case 'InstanceBinding':
-        // Create instance from spindle or expression
-        this.createInstance(stmt);
-        break;
-
-      case 'Assignment':
-        // Mutate existing variable
-        this.env.vars.set(stmt.name, stmt.expr);
-        break;
-
-      // Display/Play/Render are handled by renderers, skip here
-      case 'DisplayStmt':
-      case 'PlayStmt':
-      case 'RenderStmt':
-      case 'ComputeStmt':
-        break;
-
-      default:
-        console.warn('Unknown statement type:', stmt.type);
-    }
-  }
-
-  createInstance(stmt) {
-    // Simplified instance creation
-    // Real complexity is in renderers evaluating these
-
-    if (stmt.callName) {
-      // func()::inst<out1, out2>
-      const spindle = this.env.spindles.get(stmt.callName);
-      if (!spindle) {
-        throw new Error(`Unknown spindle: ${stmt.callName}`);
-      }
-
-      // Store instance definition
-      this.env.instances.set(stmt.instanceName, {
-        spindle: spindle,
-        args: stmt.args,
-        outputs: stmt.outputs
-      });
-    } else {
-      // name<out> = expr
-      this.env.instances.set(stmt.instanceName, {
-        expr: stmt.expr,
-        outputs: stmt.outputs
-      });
-    }
-  }
-}
-
-// Built-in math functions (merge from builtins-math.js)
-export const Builtins = {
-  sin: Math.sin,
-  cos: Math.cos,
-  tan: Math.tan,
-  sqrt: Math.sqrt,
-  abs: Math.abs,
-  floor: Math.floor,
-  ceil: Math.ceil,
-  round: Math.round,
-  min: Math.min,
-  max: Math.max,
-
-  clamp: (x, a, b) => Math.max(a, Math.min(b, x)),
-  mix: (a, b, t) => a + (b - a) * t,
-  fract: (x) => x - Math.floor(x),
-  sign: (x) => x > 0 ? 1 : x < 0 ? -1 : 0,
-
-  // Add more as needed
-};
-
-// Helper for StrandRemap evaluation (needed by CPU renderer)
-export function evalStrandRemap(node, env) {
-  // Get the base instance and strandwhy was it
-  const baseInst = env.instances.get(node.base);
-  if (!baseInst) return 0;
-
-  const strand = baseInst[node.strand];
-  if (!strand || typeof strand !== 'function') return 0;
-
-  // Evaluate coordinate expressions
-  const coords = node.coords.map(coord => evalExpr(coord, env));
-
-  // Create temporary coordinate context
-  const oldX = env.currentX;
-  const oldY = env.currentY;
-  env.currentX = coords[0];
-  env.currentY = coords[1];
-
-  // Evaluate strand with new coordinates
-  const result = strand();
-
-  // Restore coordinates
-  env.currentX = oldX;
-  env.currentY = oldY;
-
-  return result;
-}
-
-// Simple expression evaluator for coordinate calculations
-function evalExpr(node, env) {
-  switch (node.type) {
-    case 'Num': return node.v;
-    case 'Me': return env.instances.get('me')[node.field]();
-    case 'Bin':
-      const left = evalExpr(node.left, env);
-      const right = evalExpr(node.right, env);
-      switch (node.op) {
-        case '+': return left + right;
-        case '-': return left - right;
-        case '*': return left * right;
-        case '/': return left / right;
-        default: return 0;
-      }
-    default: return 0;
-  }
-}
-```
-
-**Your tasks:**
-1. Write Env class with minimal state + media support
-2. Use closures instead of ParameterStrand class
-3. Write simple Executor (just populate env.spindles/instances/vars)
-4. Merge built-in functions inline
-5. **Add evalStrandRemap() helper for coordinate remapping**
-6. Test: execute AST and verify env is populated
-
-**Delete after:**
-- `src/runtime/core/parameter-strand.js` (47 lines)
-- `src/runtime/core/errors.js` (7 lines)
-- `src/runtime/evaluation/builtins-math.js` (22 lines)
-
----
-
-### 1.3 JS Compiler Rewrite (~280 lines)
-
-**File:** `src/compilers/js-compiler.js` (rewrite from scratch)
-
-**Current state:** 336 lines, but designed for old strand-based runtime
-
-**Why rewrite?**
-- Old compiler references `evalExprToStrand` (doesn't exist in runtime-new.js)
-- `compileBasic()` uses strand evaluation (we don't have strands anymore)
-- StrandRemap handling is broken (JSON.stringify loses node references)
-- NO ROUTE PARAMETER NEEDED (each renderer has its own compiler now!)
-
-**What YOU write:**
-
-```javascript
-// js-compiler.js - Compiles WEFT AST to JavaScript functions for CPU renderer
-// This is ONLY used by CPURenderer - WebGL/Audio have their own compilers
-
-// ========== CACHING SYSTEM ==========
-const nodeCache = new WeakMap();
-let cacheId = 0;
-
-function getCacheKey(node) {
-  if (typeof node === 'object'  && node !== null) {
-    if (!nodeCache.has(node)) {
-      nodeCache.set(node, `n${cacheId++}`);
-    }
-    return nodeCache.get(node);
-  }
-  return String(node);
-}
-
-const fnCache = new Map();
-
-export function clearCache() {
-  fnCache.clear();
-  cacheId = 0;
-}
-
-// ========== AST → JS CODE GENERATION ==========
-function compileToJS(node, env) {
-  // Generate JavaScript code string from AST node
-  // Returns a string like "(x + y)" or "Math.sin(t)"
-
-  if (!node) return '0';
-
-  switch (node.type) {
-    case 'Num':
-      return String(node.v);
-
-    case 'Str':
-      return `"${node.v.replace(/"/g, '\\"')}"`;
-
-    case 'Me':
-      // Access me instance fields
-      // me@x → x, me@time → t, etc.
-      switch (node.field) {
-        case 'x': return 'x';
-        case 'y': return 'y';
-        case 'time': return 't';
-        case 'frame': return 'f';
-        case 'width': return 'w';
-        case 'height': return 'h';
-        case 'abstime': return '((Date.now() - startTime) / 1000)';
-        case 'absframe': return 'absFrame';
-        case 'fps': return 'fps';
-        case 'loop': return 'loop';
-        case 'bpm': return 'bpm';
-        case 'beat': return 'Math.floor(((Date.now() - startTime) / 1000) * (bpm / 60)) % timesigNum';
-        case 'measure': return 'Math.floor(((Date.now() - startTime) / 1000) * (bpm / 60) / timesigNum)';
-        default: return '0';
-      }
-
-    case 'Mouse':
-      return node.field === 'x' ? 'mx' : 'my';
-
-    case 'Var':
-      // Variable lookup: let a = 10; display(a)
-      return `getVar("${node.name}")`;
-
-    case 'Bin':
-      const left = compileToJS(node.left, env);
-      const right = compileToJS(node.right, env);
-      switch (node.op) {
-        case '+': return `(${left} + ${right})`;
-        case '-': return `(${left} - ${right})`;
-        case '*': return `(${left} * ${right})`;
-        case '/': return `(${left} / (${right} || 1e-9))`;  // Avoid div by zero
-        case '^': return `Math.pow(${left}, ${right})`;
-        case '%': return `((${left} % ${right} + ${right}) % ${right})`;  // Positive modulo
-        case '==': return `(${left} === ${right} ? 1 : 0)`;
-        case '!=': return `(${left} !== ${right} ? 1 : 0)`;
-        case '<': return `(${left} < ${right} ? 1 : 0)`;
-        case '>': return `(${left} > ${right} ? 1 : 0)`;
-        case '<=': return `(${left} <= ${right} ? 1 : 0)`;
-        case '>=': return `(${left} >= ${right} ? 1 : 0)`;
-        case 'AND': return `(${left} && ${right} ? 1 : 0)`;
-        case 'OR': return `(${left} || ${right} ? 1 : 0)`;
-        default: return '0';
-      }
-
-    case 'Unary':
-      const arg = compileToJS(node.expr, env);
-      if (node.op === '-') return `(-${arg})`;
-      if (node.op === 'NOT') return `(${arg} ? 0 : 1)`;
-      return `Math.${node.op}(${arg})`;  // sin, cos, etc.
-
-    case 'Call':
-      const args = node.args.map(a => compileToJS(a, env)).join(', ');
-
-      // Built-in functions
-      const builtins = {
-        sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan',
-        sqrt: 'Math.sqrt', abs: 'Math.abs', floor: 'Math.floor',
-        ceil: 'Math.ceil', round: 'Math.round',
-        min: 'Math.min', max: 'Math.max',
-        exp: 'Math.exp', log: 'Math.log', atan2: 'Math.atan2'
-      };
-
-      if (builtins[node.name]) {
-        return `${builtins[node.name]}(${args})`;
-      }
-
-      // Inline optimizations
-      if (node.name === 'clamp' && node.args.length === 3) {
-        const [val, min, max] = node.args.map(a => compileToJS(a, env));
-        return `(${val} < ${min} ? ${min} : ${val} > ${max} ? ${max} : ${val})`;
-      }
-
-      if (node.name === 'mix' && node.args.length === 3) {
-        const [a, b, t] = node.args.map(a => compileToJS(a, env));
-        return `(${a} + (${b} - ${a}) * ${t})`;
-      }
-
-      if (node.name === 'fract') {
-        return `(${args} - Math.floor(${args}))`;
-      }
-
-      return `Math.sin(${args})`;  // Fallback
-
-    case 'If':
-      const cond = compileToJS(node.condition, env);
-      const thenExpr = compileToJS(node.thenExpr, env);
-      const elseExpr = compileToJS(node.elseExpr, env);
-      return `(${cond} ? ${thenExpr} : ${elseExpr})`;
-
-    case 'Tuple':
-      // (r, g, b) → {r: ..., g: ..., b: ...} or [..., ..., ...]
-      const items = node.elements.map(e => compileToJS(e, env));
-      if (items.length === 3) {
-        return `[${items.join(', ')}]`;  // RGB tuple
-      }
-      return `[${items.join(', ')}]`;
-
-    case 'StrandAccess':
-      // color@r → getInstance("color", "r")
-      const baseName = node.base.name;  // VarExpr
-      const strandName = node.out;
-      return `getInstance("${baseName}", "${strandName}")`;
-
-    case 'StrandRemap':
-      // img@r(me@y, me@x) → evalStrandRemap with runtime node lookup
-      const nodeId = getCacheKey(node);
-      strandRemapNodes.set(nodeId, node);  // Store for runtime lookup
-      return `evalStrandRemap("${nodeId}")`;
-
-    case 'Index':
-      const base = compileToJS(node.base, env);
-      const index = compileToJS(node.index, env);
-      return `(${base}[${index}] || 0)`;
-
-    default:
-      console.warn(`[js-compiler] Unhandled node type: ${node.type}`);
-      return '0';
-  }
-}
-
-// ========== STRAND REMAP RUNTIME SUPPORT ==========
 // Store StrandRemap nodes for runtime evaluation
 const strandRemapNodes = new Map();
 
@@ -2259,148 +1609,6 @@ export class RenderOrchestrator {
 }
 ```
 
----
-
-### Updated Execution Plan with Orchestrator
-
-**Day 7: Orchestrator + Integration (NEW)**
-
-**Morning: Write core coordination (~200 lines)**
-- `src/core/render-graph.js` (80 lines)
-- `src/core/orchestrator.js` (120 lines)
-
-**Afternoon: Backend abstraction (~50 lines)**
-- `src/renderers/gpu-backend.js` (50 lines interface)
-- Update `webgl-renderer.js` to extend `GPUBackend` (+20 lines)
-
-**Evening: Integration testing**
-```weft
-load("test.jpg")::img<r,g,b>
-display(img@r(me@y, me@x))        // GPU renders
-play(img@r(me@sample % 100, 0))   // Audio samples GPU pixels
-```
-
-Should see:
-- Console: "Rendering strategy: gpu-to-audio"
-- Console: "Using synchronous readPixels for GPU→Audio"
-- Visual: Swapped coordinates image
-- Audio: Sonified pixel data
-
----
-
-### Migration: WebGL → Metal (Post v1.0)
-
-**Phase 1 (Now): WebGL prototype**
-- Implement `WebGLBackend` (Day 5)
-- Orchestrator uses sync pixel reads
-- Everything works, GPU→Audio transfer ~16ms per frame
-
-**Phase 2 (Future): Metal native**
-- Implement `MetalBackend` (~500 lines Rust or Swift)
-- Swap one line in main.js:
-  ```diff
-  - const gpuBackend = new WebGLBackend(canvas, env);
-  + const gpuBackend = new MetalBackend(canvas, env);
-  ```
-- Orchestrator automatically detects `supportsSharedMemory()` and optimizes
-- GPU→Audio transfer ~0.1ms (zero-copy!)
-
-**No orchestrator changes needed!**
-
----
-
-## RUST + METAL CONSIDERATIONS
-
-### Rust Works Great with Metal!
-
-**Key libraries:**
-- **metal-rs**: Official Rust bindings (https://github.com/gfx-rs/metal-rs)
-- **wgpu**: Cross-platform (Metal/Vulkan/DX12)
-- **winit**: Window creation
-
-**Advantages:**
-- Zero-cost abstractions (no GC pauses)
-- Memory safety (no segfaults)
-- Shared buffers map perfectly to Rust ownership
-- Compile to native or WebAssembly
-
-**Example Metal shared buffer in Rust:**
-```rust
-use metal::*;
-
-let device = Device::system_default().unwrap();
-let buffer = device.new_buffer(
-    data.len() as u64,
-    MTLResourceOptions::StorageModeShared, // Zero-copy!
-);
-
-// CPU and GPU access same memory - perfect for audio sampling visuals!
-```
-
----
-
-### Ohm.js Does NOT Work with Rust
-
-Ohm.js is JavaScript-only. Rust alternatives:
-
-**Option A: Parser combinator (pest)**
-```rust
-// grammar.pest (similar to Ohm)
-program = { statement* }
-statement = { spindle_def | display_stmt }
-display_stmt = { "display" ~ "(" ~ expr ~ ")" }
-expr = { me_expr | number | binary_expr }
-me_expr = { "me" ~ "@" ~ ident }
-
-// parser.rs
-use pest::Parser;
-
-#[derive(Parser)]
-#[grammar = "grammar.pest"]
-struct WeftParser;
-
-let pairs = WeftParser::parse(Rule::program, source)?;
-```
-
-**Option B: Keep Ohm in JavaScript**
-- Parse with Ohm.js in Node.js/Deno
-- Generate AST JSON
-- Pass to Rust via FFI/WASM
-- Rust handles compilation + rendering
-
-**Option C: Manual port (~400 lines Rust)**
-- Rewrite grammar in pest/nom
-- Similar structure to current parser
-- Maintains language design
-
-**Recommendation:** Start with JavaScript + Ohm (rapid iteration), migrate parser to Rust later if needed.
-
----
-
-### Rust Migration Path (Optional - Post v1.0)
-
-**Phase 1: JavaScript + WebGL (current plan)**
-- Fast prototyping
-- All browsers supported
-- ~4380 lines JavaScript
-
-**Phase 2: Hybrid (renderers in Rust)**
-- Parser stays JavaScript (Ohm)
-- Renderers compile to WebAssembly
-- Metal backend for native macOS app
-- Still works in browser via wgpu→WebGPU
-
-**Phase 3: Full Rust (if desired)**
-- Port parser to pest
-- Everything compiles to native or WASM
-- Ultimate performance
-
-**Don't need to decide now!** JavaScript version is complete and performant.
-
----
-
-**READY?** When you want to start, tell me: "Day 1 - Starting Parser"
-
 I'll be here to answer questions, review code, and handle all the UI/integration work.
 
 You focus on the core. Write clean. Write simple. Write fast. 🚀
@@ -2414,7 +1622,7 @@ You focus on the core. Write clean. Write simple. Write fast. 🚀
 **WEFT instances are context-agnostic until render time.**
 
 ```weft
-color<r> = me@x * me@y
+Ncolor<r> = me@x * me@y
 color<g> = sin(me@time)
 wave<audio> = sin(color@r * 440)  // Audio uses visual value!
 
@@ -2441,310 +1649,536 @@ The same data (`color<r>`) can be used in `display()`, `play()`, or `compute()`.
 
 **That's it!** Renderers are thin wrappers around their specialized execution environments.
 
-### Implementation Details
+### How Cross-Context Interop Works
 
-**1. Coordinator structure:**
+**The two-tier compilation system:**
+
+1. **CPU Evaluator (mandatory)** - Compiles ALL instances to JavaScript functions
+   - Uses js-compiler.js
+   - Maps `color@r` → executable JS function `(x,y,t) => x * y`
+   - Provides `eval(instanceName, outputName, x, y, t)` interface
+
+2. **Specialized Renderers (optional, for performance)** - Compile to native targets
+   - WebGL: visual instances → GLSL fragment shader
+   - Audio: audio instances → native audio code
+   - Can call `coordinator.getValue()` to access cross-context values
+
+**Example flow:**
+
+```
+Audio needs visual value:
+  play(sin(color@r * 440))
+       └─────┬─────┘
+             │
+  audio renderer calls: this.getValue('color', 'r', 0, 0, t)
+             │
+  coordinator routes to: cpuEvaluator.eval('color', 'r', 0, 0, t)
+             │
+  cpuEvaluator executes: colorRfn(0, 0, t)  // Pre-compiled JS function
+             │
+  returns: 0.5
+             │
+  audio continues: sin(0.5 * 440)
+```
+
+### Implementation
+
+**1. BaseRenderer (minimal):**
 ```javascript
-class Coordinator {
-  constructor(ast, env) {
-    this.ast = ast;
+// base-renderer.js (~25 lines)
+export class BaseRenderer {
+  constructor(env, name) {
     this.env = env;
-    this.graph = null;
-    this.cpuEvaluator = null;
-
-    this.gpuRenderer = null;
-    this.audioRenderer = null;
-    this.cpuRenderer = null;
+    this.name = name;
+    this.coordinator = null;
   }
 
-  async compile() {
-    // Step 1: Build dependency graph
-    this.graph = new RenderGraph(this.ast, this.env);
-    const graphResult = this.graph.build();
+  async init() { throw new Error('implement'); }
+  async compile(ast, env) { throw new Error('implement'); }
+  render() { throw new Error('implement'); }
+  cleanup() {}
 
-    this.outputStatements = this.ast.statements.filter(s =>
-      s.type === 'DisplayStmt' || s.type === 'RenderStmt' ||
-      s.type === 'PlayStmt' || s.type === 'ComputeStmt'
-    );
-
-    // Step 2: Tag contexts
-    this.graph.tagContexts(this.outputStatements);
-    const contextsNeeded = this.graph.getContextsNeeded();
-
-    // Step 3: Build CPU evaluator for ALL instances (mandatory!)
-    this.cpuEvaluator = new CPUEvaluator(this.graph, this.env);
-    await this.cpuEvaluator.compile();
-
-    // Step 4: Compile each active renderer to its native target
-    const compilePromises = [];
-
-    if (contextsNeeded.has('visual') && this.gpuRenderer) {
-      this.gpuRenderer.coordinator = this; // Give access to getValue
-      compilePromises.push(this.gpuRenderer.compile(this.ast, this.env));
-    }
-
-    if (contextsNeeded.has('audio') && this.audioRenderer) {
-      this.audioRenderer.coordinator = this; // Give access to getValue
-      compilePromises.push(this.audioRenderer.compile(this.ast, this.env));
-    }
-
-    if (contextsNeeded.has('compute') && this.cpuRenderer) {
-      this.cpuRenderer.coordinator = this;
-      compilePromises.push(this.cpuRenderer.compile(this.ast, this.env));
-    }
-
-    await Promise.all(compilePromises);
-  }
-
-  // Cross-context value access
-  getValue(instanceName, outputName, x, y, t) {
-    return this.cpuEvaluator.eval(instanceName, outputName, x, y, t);
+  // Cross-context helper
+  getValue(inst, out, x, y, t) {
+    return this.coordinator?.getValue(inst, out, x, y, t) ?? 0;
   }
 }
 ```
 
-**2. CPUEvaluator (revives js-compiler.js):**
+**2. CPUEvaluator (uses js-compiler.js):**
 ```javascript
-import { compileToJS } from '../compilers/js-compiler.js';
+// cpu-evaluator.js (~50 lines)
+import { compile } from '../compilers/js-compiler.js';
 
 export class CPUEvaluator {
   constructor(graph, env) {
     this.graph = graph;
     this.env = env;
-    this.functions = new Map(); // instanceName@outputName → compiled JS function
+    this.functions = new Map();
   }
 
-  async compile() {
-    // For each instance in the graph, compile all its outputs to JS functions
-    for (const [instanceName, node] of this.graph.nodes) {
-      for (const [outputName, exprAST] of node.outputs) {
-        const key = `${instanceName}@${outputName}`;
-
-        // Use js-compiler to create executable JS function
-        const compiledFn = compileToJS(exprAST, this.env);
-        this.functions.set(key, compiledFn);
+  compile() {
+    for (const [instName, node] of this.graph.nodes) {
+      for (const [outName, exprAST] of node.outputs) {
+        const key = `${instName}@${outName}`;
+        // compile() returns executable function: (me, env) => value
+        const fn = compile(exprAST, this.env);
+        this.functions.set(key, fn);
       }
     }
-
-    console.log(`[CPUEvaluator] Compiled ${this.functions.size} instance outputs`);
   }
 
-  eval(instanceName, outputName, x, y, t) {
-    const key = `${instanceName}@${outputName}`;
+  eval(instName, outName, x, y, t) {
+    const key = `${instName}@${outName}`;
     const fn = this.functions.get(key);
+    if (!fn) return 0;
 
-    if (!fn) {
-      console.warn(`[CPUEvaluator] Instance output not found: ${key}`);
-      return 0;
-    }
-
-    // Execute the compiled function with current coordinates/time
-    const me = { x, y, time: t };
+    const me = {x, y, time: t};
     return fn(me, this.env);
   }
 }
 ```
 
-**3. BaseRenderer interface:**
+**Note:** `js-compiler.js` needs rewrite (YOU WRITE) - current version is bloated, not authored by you.
+
+**3. Coordinator (owns timing + interop):**
 ```javascript
-export class BaseRenderer {
-  constructor(env, name) {
+// coordinator.js (~150 lines total)
+export class Coordinator {
+  constructor(ast, env) {
+    this.ast = ast;
     this.env = env;
-    this.name = name;
-    this.coordinator = null; // Set by Coordinator during compile()
+
+    // Graph and evaluator
+    this.graph = null;
+    this.cpuEvaluator = null;
+
+    // Renderers
+    this.gpuRenderer = null;
+    this.audioRenderer = null;
+    this.activeRenderers = new Set();
+
+    // Timing
+    this.running = false;
+    this.frameId = null;
+    this.lastFrameTime = 0;
   }
 
-  async init() { throw new Error('implement init'); }
-  async compile(ast, env) { throw new Error('implement compile'); }
-  render() { throw new Error('implement render'); }
-  cleanup() {}
+  async compile() {
+    // 1. Build graph
+    this.graph = new RenderGraph(this.ast, this.env);
+    this.graph.build();
 
-  // Helper: Get cross-context value via coordinator
-  getCrossContextValue(instanceName, outputName, x, y, t) {
-    if (!this.coordinator) {
-      console.warn(`[${this.name}] No coordinator - can't get cross-context value`);
-      return 0;
+    // 2. Tag contexts
+    const outputStmts = this.ast.statements.filter(s =>
+      s.type === 'DisplayStmt' || s.type === 'PlayStmt' ||
+      s.type === 'RenderStmt' || s.type === 'ComputeStmt'
+    );
+    this.graph.tagContexts(outputStmts);
+    const contexts = this.graph.getContextsNeeded();
+
+    // 3. Build CPU evaluator (mandatory!)
+    this.cpuEvaluator = new CPUEvaluator(this.graph, this.env);
+    this.cpuEvaluator.compile();
+
+    // 4. Compile active renderers
+    const promises = [];
+
+    if (contexts.has('visual') && this.gpuRenderer) {
+      this.gpuRenderer.coordinator = this;
+      promises.push(this.gpuRenderer.compile(this.ast, this.env));
+      this.activeRenderers.add('gpu');
     }
-    return this.coordinator.getValue(instanceName, outputName, x, y, t);
+
+    if (contexts.has('audio') && this.audioRenderer) {
+      this.audioRenderer.coordinator = this;
+      promises.push(this.audioRenderer.compile(this.ast, this.env));
+      this.activeRenderers.add('audio');
+    }
+
+    await Promise.all(promises);
+  }
+
+  start() {
+    this.running = true;
+    this.mainLoop();
+  }
+
+  mainLoop() {
+    if (!this.running) return;
+
+    const now = performance.now();
+    const delta = now - this.lastFrameTime;
+    const targetDelta = 1000 / this.env.targetFps;
+
+    if (delta >= targetDelta) {
+      this.env.frame++;
+
+      // Render active contexts
+      if (this.activeRenderers.has('gpu')) {
+        this.gpuRenderer.render();
+      }
+
+      this.lastFrameTime = now;
+    }
+
+    this.frameId = requestAnimationFrame(() => this.mainLoop());
+  }
+
+  stop() {
+    this.running = false;
+    if (this.frameId) cancelAnimationFrame(this.frameId);
+  }
+
+  // Cross-context value access
+  getValue(instName, outName, x, y, t) {
+    return this.cpuEvaluator.eval(instName, outName, x, y, t);
+  }
+
+  cleanup() {
+    this.stop();
+    this.gpuRenderer?.cleanup();
+    this.audioRenderer?.cleanup();
   }
 }
 ```
 
-**4. AudioRenderer using cross-context access:**
+### Audio Renderer Strategy
+
+**Current (Web):** Use ScriptProcessorNode on main thread
+- Simple implementation
+- Direct access to `coordinator.getValue()` for cross-context
+- Deprecated API but fine for prototyping
+- Can call `this.getValue('color', 'r', 0, 0, t)` directly
+
+**Future (Native):** Rust/Metal/CoreAudio
+- High-performance native audio
+- SharedArrayBuffer or compile-time baking for cross-context
+- Clean swap because of BaseRenderer interface
+
+**Don't optimize Web Audio yet** - focus on getting the architecture right. Native audio will replace it anyway.
+
+### Renderer Types
+
+**Implemented:**
+- `WebGLRenderer` - GPU fragment shaders (GLSL)
+- `ScriptProcessorAudioRenderer` - Main thread audio (Web Audio API)
+
+**Future:**
+- `MetalRenderer` - Native GPU (Rust/Metal)
+- `NativeAudioRenderer` - Native audio (Rust/CoreAudio)
+- `WebGPURenderer` - Modern GPU compute + 3D
+- `DataExportRenderer` - Output to CSV/JSON
+- `VideoRenderer` - Encode to video file
+
+All extend `BaseRenderer`, all get access to `coordinator.getValue()`.
+
+### JS Compiler Rewrite (YOU WRITE)
+
+**Current state:** `js-compiler.js` is 331 lines, not written by you, bloated with optimizations
+
+**Goal:** Clean rewrite (~150 lines) that compiles AST to JavaScript functions
+
+**Interface:**
 ```javascript
-class AudioWorkletRenderer extends BaseRenderer {
-  async compile(ast, env) {
-    // ... analyze which instances we need ...
+// js-compiler.js
+export function compile(exprAST, env) {
+  // Returns executable function: (me, env) => number
+  // me: {x, y, time}
+  // env: runtime environment
+}
+```
 
-    // Generate worklet code
-    let workletCode = `
-      class WEFTProcessor extends AudioWorkletProcessor {
-        process(inputs, outputs, parameters) {
-          const output = outputs[0][0];
+**What it needs to handle:**
+```javascript
+// Numbers and operations
+Num → return node.v;
+Bin → (left op right)
+Unary → Math.sin(arg), Math.cos(arg), etc.
 
-          for (let i = 0; i < output.length; i++) {
-            const t = (this.sampleIndex + i) / sampleRate;
+// Environment access
+Me → me.x, me.y, me.time
+Mouse → env.mouse.x, env.mouse.y
 
-            // For cross-context dependencies, we need a mechanism
-            // TODO(human): How does worklet call back to main thread?
-            // Options:
-            //   A) Pre-compute visual values, send to worklet via SharedArrayBuffer
-            //   B) Keep audio expressions simple (no visual deps in worklet)
-            //   C) Evaluate everything on main thread (defeats worklet purpose)
-          }
+// Control flow
+If → (cond ? then : else)
+Call → Math.sin(arg), noise(x,y,t), etc.
+
+// Variables (will be rare in new system)
+Var → env.getVar(name)
+
+// Strand access (IMPORTANT!)
+StrandAccess → coordinator.getValue(base, strand, me.x, me.y, me.time)
+StrandRemap → coordinator.getValue(base, strand, remappedX, remappedY, me.time)
+```
+
+**Simplifications vs old version:**
+- No caching (CPUEvaluator caches the compiled functions)
+- No multiple compilation levels (just one: AST → function)
+- No route parameter (that's renderer-specific)
+- Straightforward recursive compilation
+
+**Example output:**
+```javascript
+// Input AST: sin(me@x * 440)
+compile(sinCallNode, env) →
+  (me, env) => Math.sin(me.x * 440)
+
+// Input AST: color@r (StrandAccess)
+compile(strandAccessNode, env) →
+  (me, env) => env.coordinator.getValue('color', 'r', me.x, me.y, me.time)
+```
+
+### Next Steps
+
+1. **Rewrite js-compiler.js** (~150 lines, YOU WRITE)
+2. **Write minimal BaseRenderer** (~25 lines, YOU WRITE)
+3. **Write CPUEvaluator** (~50 lines, YOU WRITE)
+4. **Enhance Coordinator** with timing + cpuEvaluator (~150 lines total, YOU WRITE)
+5. **Refactor WebGLRenderer** - remove AbstractRenderer bloat, extend BaseRenderer
+6. **Write ScriptProcessorAudioRenderer** - simple main-thread audio (~100 lines, YOU WRITE)
+7. **Delete abstract-renderer.js** - no longer needed
+
+Then test cross-context access with simple example:
+```weft
+color<r> = me@x
+wave<audio> = sin(color@r * 440)
+
+display(color@r, 0, 0)
+play(wave@audio)
+```
+
+---
+
+## REFERENCE: JS Compiler Skeleton (For You to Type)
+
+**File:** `src/compilers/js-compiler-new.js`
+
+**Structure using Pattern Matching:**
+
+```javascript
+// js-compiler-new.js - Clean AST → JavaScript function compiler
+import { match, _, inst } from '../utils/match.js';
+// Import AST node classes (check ast/ast-node.js for exact names)
+// import { Num, Bin, Unary, Me, Mouse, Call, If, Var, StrandAccess, StrandRemap } from '../ast/ast-node.js';
+
+// ========== COMPILATION CORE ==========
+
+function compileToJS(node, env) {
+  // Handle arrays (edge case)
+  if (Array.isArray(node)) {
+    return node.length === 1 ? compileToJS(node[0], env) : '0';
+  }
+
+  return match(node,
+    // ===== LITERALS =====
+    inst(Num, _), (v) => String(v),
+
+    inst(Str, _), (v) => `"${v.replace(/"/g, '\\"')}"`,
+
+    // ===== ENVIRONMENT ACCESS =====
+    inst(Me, _), (field) => match(field,
+      "x", () => "x",
+      "y", () => "y",
+      "time", () => "t",
+      "frame", () => "f",
+      "width", () => "w",
+      "height", () => "h",
+      _, () => "0"
+    ),
+
+    inst(Mouse, _), (field) => field === "x" ? "mx" : field === "y" ? "my" : "0",
+
+    // ===== OPERATIONS =====
+    inst(Bin, _, _, _), (left, op, right) => {
+      const leftCode = compileToJS(left, env);
+      const rightCode = compileToJS(right, env);
+
+      // TODO(human): Implement all operators
+      // Examples:
+      // return match(op,
+      //   "+", () => `(${leftCode}+${rightCode})`,
+      //   "-", () => `(${leftCode}-${rightCode})`,
+      //   "*", () => `(${leftCode}*${rightCode})`,
+      //   "/", () => `(${leftCode}/(${rightCode}||1e-9))`,
+      //   "^", () => `Math.pow(${leftCode},${rightCode})`,
+      //   "%", () => `((${leftCode}%${rightCode}+${rightCode})%${rightCode})`,
+      //   "==", () => `(${leftCode}===${rightCode}?1:0)`,
+      //   "!=", () => `(${leftCode}!==${rightCode}?1:0)`,
+      //   "<", () => `(${leftCode}<${rightCode}?1:0)`,
+      //   ">", () => `(${leftCode}>${rightCode}?1:0)`,
+      //   "<=", () => `(${leftCode}<=${rightCode}?1:0)`,
+      //   ">=", () => `(${leftCode}>=${rightCode}?1:0)`,
+      //   "AND", () => `(${leftCode}&&${rightCode}?1:0)`,
+      //   "OR", () => `(${leftCode}||${rightCode}?1:0)`,
+      //   _, () => "0"
+      // );
+
+      return "0"; // Placeholder
+    },
+
+    inst(Unary, _, _), (op, expr) => {
+      const arg = compileToJS(expr, env);
+
+      return match(op,
+        "-", () => `(-${arg})`,
+        "NOT", () => `(${arg}?0:1)`,
+        _, () => {
+          const mathFn = getMathFunction(op);
+          return mathFn ? `${mathFn}(${arg})` : `(-${arg})`;
         }
+      );
+    },
+
+    // ===== CONTROL FLOW =====
+    inst(If, _, _, _), (condition, thenExpr, elseExpr) => {
+      const cond = compileToJS(condition, env);
+      const thenCode = compileToJS(thenExpr, env);
+      const elseCode = compileToJS(elseExpr, env);
+      return `(${cond}?${thenCode}:${elseCode})`;
+    },
+
+    inst(Call, _, _), (name, args) => {
+      const argCodes = args.map(arg => compileToJS(arg, env));
+
+      // Check for built-in math functions
+      const mathFn = getMathFunction(name);
+      if (mathFn) {
+        return `${mathFn}(${argCodes.join(',')})`;
       }
+
+      // Special functions
+      return match(name,
+        "clamp", () => {
+          if (argCodes.length === 3) {
+            return `(${argCodes[0]}<${argCodes[1]}?${argCodes[1]}:${argCodes[0]}>${argCodes[2]}?${argCodes[2]}:${argCodes[0]})`;
+          }
+          return `(${argCodes[0]}<0?0:${argCodes[0]}>1?1:${argCodes[0]})`;
+        },
+        "noise", () => `env.__noise3(${argCodes[0]}*3.1,${argCodes[1]}*3.1,${argCodes[2]}*0.5)`,
+        _, () => `Math.sin(${argCodes.join(',')})`
+      );
+    },
+
+    // ===== VARIABLES & INSTANCES =====
+    inst(Var, _), (name) => `getVar("${name}")`,
+
+    inst(StrandAccess, _, _), (base, out) => `getInstance("${base}","${out}")`,
+
+    inst(StrandRemap, _, _, _), (base, out, coords) => `evalStrandRemap(${JSON.stringify(node)})`,
+
+    // Default case
+    _, () => {
+      console.warn('[js-compiler] Unhandled node:', node);
+      return "0";
+    }
+  );
+}
+
+// ========== HELPER FUNCTIONS ==========
+
+function getMathFunction(name) {
+  const MAP = {
+    sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan',
+    sqrt: 'Math.sqrt', abs: 'Math.abs', exp: 'Math.exp', log: 'Math.log',
+    min: 'Math.min', max: 'Math.max', floor: 'Math.floor',
+    ceil: 'Math.ceil', round: 'Math.round', atan2: 'Math.atan2'
+  };
+  return MAP[name];
+}
+
+function createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap) {
+  let params = ['x', 'y', 't', 'f', 'w', 'h', 'mx', 'my'];
+  let body = '';
+
+  // Inject getVar helper if needed
+  if (needsGetVar) {
+    params.push('getVar');
+    body += `
+    function getVar(name) {
+      const val = env.vars.get(name);
+      if (val === undefined) return 0;
+      if (typeof val === 'number') return val;
+      return evalExpr(val, env, {x, y});
+    }
     `;
   }
-}
-```
 
-**TODO(human): Audio Worklet Cross-Context Problem**
-
-Audio worklet runs in separate thread and CAN'T call `coordinator.getValue()` directly (no main thread access).
-
-**Options:**
-
-**A) SharedArrayBuffer approach:**
-```javascript
-// Main thread: Pre-compute visual values each frame
-const visualBuffer = new Float32Array(sharedArrayBuffer);
-requestAnimationFrame(() => {
-  visualBuffer[0] = coordinator.getValue('color', 'r', 0.5, 0.5, time);
-  visualBuffer[1] = coordinator.getValue('color', 'g', 0.5, 0.5, time);
-});
-
-// Worklet: Read from shared buffer
-const colorR = visualBuffer[0];
-const wave = Math.sin(colorR * 440);
-```
-
-**B) Evaluate audio on main thread (not worklet):**
-```javascript
-// AudioRenderer runs on main thread, outputs via ScriptProcessorNode
-// Can call coordinator.getValue() directly
-// Downside: Main thread audio is deprecated, may have timing issues
-```
-
-**C) Bake visual dependencies at compile time:**
-```javascript
-// If audio depends on simple visual expression, evaluate during compilation
-// Only works for time-independent expressions
-```
-
-**D) Message passing (slow):**
-```javascript
-// Worklet posts message to main thread, waits for response
-// Too slow for real-time audio (introduces latency)
-```
-
-### TODO(human) - Critical Design Decisions
-
-**1. Audio worklet cross-context access - which approach?**
-
-Audio worklet runs in isolated thread, can't call main thread functions. When audio needs visual value:
-
-- **Option A: SharedArrayBuffer** - Main thread pre-computes visual values into shared memory, worklet reads
-  - Pros: Real-time, no latency
-  - Cons: Limited sampling points (can't read arbitrary x,y), requires COOP/COEP headers
-
-- **Option B: ScriptProcessorNode** - Run audio on main thread instead of worklet
-  - Pros: Direct access to coordinator.getValue(), simple
-  - Cons: Deprecated API, may have glitches under heavy load
-
-- **Option C: Compile visual deps into worklet** - Duplicate compilation (GLSL + worklet JS)
-  - Pros: Worklet is self-contained, no cross-thread communication
-  - Cons: Code duplication, larger worklet code
-
-- **Option D: Restrict cross-context** - Audio can't depend on visual (error or warning)
-  - Pros: Simplest implementation
-  - Cons: Defeats WEFT's core purpose
-
-**Recommendation:** Start with Option B (ScriptProcessorNode) for simplicity, migrate to Option C (duplicate compilation) when we need worklet performance. Option A is future optimization if needed.
-
-**2. Visual reading audio values - do we need this?**
-
-Does visual ever need to read audio values? Example:
-```weft
-wave<audio> = sin(me@time * 440)
-viz<r> = wave@audio  // Visual driven by audio amplitude?
-
-play(wave@audio)
-display(viz@r, 0, 0)
-```
-
-If yes, GPU can't evaluate this (no audio in GLSL). Would need:
-- CPU evaluator computes `wave@audio` value
-- Pass to GPU as uniform
-- Or evaluate entire `viz<r>` on CPU (slow)
-
-**3. How to handle texture/media sampling in cross-context?**
-
-Example:
-```weft
-img<r> = load("cat.jpg")@r(x~me@x, y~me@y)
-
-wave<audio> = sin(img@r * 440)  // Audio needs texture sample!
-
-display(img@r, 0, 0)
-play(wave@audio)
-```
-
-Texture is on GPU, audio needs pixel value. Options:
-- CPU keeps copy of texture data in typed array
-- GPU readback (very slow)
-- Error: "Can't sample texture in audio context"
-
-**4. Renderer registry structure in Coordinator:**
-```javascript
-// Approach A: By context
-this.renderersByContext = new Map([
-  ['visual', this.gpuRenderer],
-  ['audio', this.audioRenderer]
-]);
-
-// Approach B: By name
-this.renderers = {
-  gpu: this.gpuRenderer,
-  audio: this.audioRenderer
-};
-
-// Approach C: Array (simpler)
-this.renderers = [this.gpuRenderer, this.audioRenderer].filter(Boolean);
-```
-
-5. **Abstract renderer bloat:**
-   - Current abstract-renderer.js is 371 lines
-   - Most is frame timing, performance monitoring, DOM updates
-   - Should this move to Coordinator instead?
-   - Make BaseRenderer truly minimal?
-
-### Suggested Implementation Plan
-
-**Phase 1: Thin Base Class (DO THIS NOW)**
-```javascript
-// base-renderer.js
-export class BaseRenderer {
-  constructor(env, name) {
-    this.env = env;
-    this.name = name;
+  // Inject getInstance helper if needed
+  if (needsGetInstance) {
+    params.push('getInstance');
+    body += `
+    function getInstance(baseName, strandName) {
+      const inst = env.instances.get(baseName);
+      if (!inst) return 0;
+      if (typeof inst[strandName] === 'function') return inst[strandName]();
+      if (inst[strandName] !== undefined) return inst[strandName];
+      return 0;
+    }
+    `;
   }
 
-  async init() { throw new Error('implement'); }
-  async compile(ast) { throw new Error('implement'); }
-  render() { throw new Error('implement'); }
-  cleanup() {}
+  // Inject evalStrandRemap helper if needed
+  if (needsStrandRemap) {
+    params.push('evalStrandRemap');
+    body += `
+    function evalStrandRemap(node) {
+      return runtimeEvalStrandRemap(node, env, {x, y});
+    }
+    `;
+  }
+
+  body += `
+  const startTime = env.startTime;
+  const absFrame = env.frame;
+  const fps = env.targetFps;
+  const loop = env.loop;
+  const bpm = env.bpm;
+  const timesigNum = env.timesig_num;
+
+  return (${jsCode});
+  `;
+
+  try {
+    return new Function(...params, 'env', 'evalExpr', 'runtimeEvalStrandRemap', body);
+  } catch (e) {
+    console.error('[js-compiler] Function creation failed:', e);
+    console.error('Generated code:', body);
+    return null;
+  }
 }
+
+// ========== PUBLIC API ==========
+
+export function compile(node, env) {
+  const jsCode = compileToJS(node, env);
+
+  const needsGetVar = jsCode.includes('getVar(');
+  const needsGetInstance = jsCode.includes('getInstance(');
+  const needsStrandRemap = jsCode.includes('evalStrandRemap(');
+
+  const fn = createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap);
+
+  if (!fn) return () => 0;
+
+  return (me, envCtx, evalExprFn, runtimeEvalStrandRemapFn) => {
+    const currentTime = ((envCtx.frame % envCtx.loop) / envCtx.targetFps);
+    return fn(
+      me.x, me.y, currentTime, envCtx.frame % envCtx.loop,
+      envCtx.resW, envCtx.resH, envCtx.mouse.x, envCtx.mouse.y,
+      envCtx, evalExprFn, runtimeEvalStrandRemapFn
+    );
+  };
+}
+
+export { compile as compileExpr };
 ```
 
-**Phase 2: Refactor Existing Renderers**
-- WebGLRenderer extends BaseRenderer (remove AbstractRenderer bloat)
-- AudioWorkletRenderer extends BaseRenderer (same)
-- Move frame timing/monitoring to Coordinator
+**Key Implementation Notes:**
 
-**Phase 3: Inter-Renderer Communication (ONLY IF NEEDED)**
-- Add getValue() to BaseRenderer interface
-- Implement CPUEvaluator using js-compiler.js
-- Coordinator provides routing
+1. **Pattern matching with `inst()`:** Each AST node type is matched using `inst(NodeClass, _, _, ...)` where the underscores match constructor arguments
+2. **Automatic deconstruction:** The match callback receives the deconstructed node properties
+3. **Binary operations (TODO):** You need to use nested `match()` on the `op` to handle all operators
+4. **Check AST node structure:** Look at `src/ast/ast-node.js` to see what each node's `deconstruct()` returns
 
-**Don't over-engineer until you have a concrete need!**
+**Goal:** ~150 lines of clean, elegant code using pattern matching.
