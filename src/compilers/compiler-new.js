@@ -1,7 +1,6 @@
 import {match, _, inst} from '../utils/match.js'
 
 import {
-  ASTNode,
   BinaryExpr,
   UnaryExpr,
   CallExpr,
@@ -10,22 +9,9 @@ import {
   StrExpr,
   MeExpr,
   MouseExpr,
-  TupleExpr,
-  IndexExpr,
   StrandAccessExpr,
   StrandRemapExpr,
-  IfExpr,
-  LetBinding,
-  Assignment,
-  NamedArg,
-  OutputStatement,
-  DisplayStmt,
-  RenderStmt,
-  PlayStmt,
-  ComputeStmt,
-  SpindleDef,
-  InstanceBinding,
-  Program
+  IfExpr
 } from '../ast/ast-node.js'
 
 function compileToJS(node, env) {
@@ -43,7 +29,14 @@ function compileToJS(node, env) {
       "frame", () => "f",
       "width", () => "w",
       "height", () => "h",
-      _, (n) => "0"
+      "fps", () => "fps",
+      "loop", () => "loop",
+      "bpm", () => "bpm",
+      "beat", () => "beat",
+      "measure", () => "measure",
+      "abstime", () => "abstime",
+      "absframe", () => "absframe",
+      _, () => "0"
     ),
     inst(MouseExpr, _), (field) => field == "x" ? "mx" : field === "y" ? "my" : "0",
     inst(BinaryExpr, _,_,_), (left, right, op) => {
@@ -87,8 +80,6 @@ function compileToJS(node, env) {
     },
     inst(CallExpr, _, _), (name, args) => {
       const argCodes = args.map(arg => compileToJS(arg, env));
-
-      // Check for built-in math functions
       const mathFn = getMathFunction(name);
       if (mathFn) {
         return `${mathFn}(${argCodes.join(',')})`;
@@ -105,11 +96,20 @@ function compileToJS(node, env) {
         _, () => `Math.sin(${argCodes.join(',')})`
       );
     },
-    inst(VarExpr, _), (name) => `getVar("${name}")`,
-    inst(StrandAccessExpr, _, _), (base, out) =>
-      `getInstance("${base}","${out}")`,
-    inst(StrandRemap, _, _, _), (base, out, coords) =>
-      `evalStrandRemap(${JSON.stringify(node)})`,
+    inst(VarExpr, _), (name) => `env.getVar("${name}")`,
+    inst(StrandAccessExpr, _, _), (base, out) => {
+      const baseName = base.name;
+      return `env.coordinator.getValue("${baseName}","${out}",me)`;
+    },
+    inst(StrandRemapExpr, _, _, _), (base, strand, mappings) => {
+      const baseName = base.name;
+      const coordPairs = mappings.map(m => {
+        const axisCode = compileToJS(m.expr, env);
+        return `${m.axis}:${axisCode}`;
+      });
+      const coordObj = `{...me,${coordPairs.join(',')}}`;
+      return `env.coordinator.getValue("${baseName}","${strand}",${coordObj})`;
+    },
     _, (n) => {
       console.warn('[js-compiler] Unhandled node:', node);
       return "0";
@@ -128,84 +128,33 @@ function getMathFunction(name) {
 }
 
 
-function createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap) {
-  let params = ['x', 'y', 't', 'f', 'w', 'h', 'mx', 'my'];
-  let body = '';
-
-  if (needsGetVar) {
-    params.push('getVar');
-    body += `
-    function getVar(name) {
-      const val = env.vars.get(name);
-      if (val === undefined) return 0;
-      if (typeof val === 'number') return val;
-      return evalExpr(val, env, {x, y});
-    }
-    `;
-  }
-
-  if (needsGetInstance) {
-    params.push('getInstance');
-    body += `
-    function getInstance(baseName, strandName) {
-      const inst = env.instances.get(baseName);
-      if (!inst) return 0;
-      if (typeof inst[strandName] === 'function') return inst[strandName]();
-      if (inst[strandName] !== undefined) return inst[strandName];
-      return 0;
-    }
-    `;
-  }
-
-  if (needsStrandRemap) {
-    params.push('evalStrandRemap');
-    body += `
-    function evalStrandRemap(node) {
-      return runtimeEvalStrandRemap(node, env, {x, y});
-    }
-    `;
-  }
-
-  body += `
-  const startTime = env.startTime;
-  const absFrame = env.frame;
-  const fps = env.targetFps;
-  const loop = env.loop;
-  const bpm = env.bpm;
-  const timesigNum = env.timesig_num;
-
-  return (${jsCode});
+export function compile(node, env) {
+  const jsCode = compileToJS(node, env);
+  const funcBody = `
+    const x = me.x;
+    const y = me.y;
+    const t = me.time;
+    const f = me.frame;
+    const w = me.width;
+    const h = me.height;
+    const fps = me.fps;
+    const loop = me.loop;
+    const bpm = me.bpm;
+    const beat = me.beat;
+    const measure = me.measure;
+    const abstime = me.abstime;
+    const absframe = me.absframe;
+    const mx = env.mouse.x;
+    const my = env.mouse.y;
+    return (${jsCode});
   `;
 
   try {
-    return new Function(...params, 'env', 'evalExpr', 'runtimeEvalStrandRemap', body);
+    return new Function('me', 'env', funcBody);
   } catch (e) {
     console.error('[js-compiler] Function creation failed:', e);
-    console.error('Generated code:', body);
-    return null;
+    console.error('Generated code:', funcBody);
+    return () => 0;
   }
-}
-
-
-
-export function compile(node, env) {
-  const jsCode = compileToJS(node, env);
-
-  const needsGetVar = jsCode.includes('getVar(');
-  const needsGetInstance = jsCode.includes('getInstance(');
-  const needsStrandRemap = jsCode.includes('evalStrandRemap(');
-
-  const fn = createFunction(jsCode, needsGetVar, needsGetInstance, needsStrandRemap);
-
-  if (!fn) return () => 0;
-
-  return (me, envCtx, evalExprFn, runtimeEvalStrandRemapFn) => {
-    const currentTime = ((envCtx.frame % envCtx.loop) / envCtx.targetFps);
-    return fn(
-      me.x, me.y, currentTime, envCtx.frame % envCtx.loop,
-      envCtx.resW, envCtx.resH, envCtx.mouse.x, envCtx.mouse.y,
-      envCtx, evalExprFn, runtimeEvalStrandRemapFn
-    );
-  };
 }
 export { compile as compileExpr };

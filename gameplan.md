@@ -1873,65 +1873,9 @@ export class Coordinator {
 
 All extend `BaseRenderer`, all get access to `coordinator.getValue()`.
 
-### JS Compiler Rewrite (YOU WRITE)
-
-**Current state:** `js-compiler.js` is 331 lines, not written by you, bloated with optimizations
-
-**Goal:** Clean rewrite (~150 lines) that compiles AST to JavaScript functions
-
-**Interface:**
-```javascript
-// js-compiler.js
-export function compile(exprAST, env) {
-  // Returns executable function: (me, env) => number
-  // me: {x, y, time}
-  // env: runtime environment
-}
-```
-
-**What it needs to handle:**
-```javascript
-// Numbers and operations
-Num → return node.v;
-Bin → (left op right)
-Unary → Math.sin(arg), Math.cos(arg), etc.
-
-// Environment access
-Me → me.x, me.y, me.time
-Mouse → env.mouse.x, env.mouse.y
-
-// Control flow
-If → (cond ? then : else)
-Call → Math.sin(arg), noise(x,y,t), etc.
-
-// Variables (will be rare in new system)
-Var → env.getVar(name)
-
-// Strand access (IMPORTANT!)
-StrandAccess → coordinator.getValue(base, strand, me.x, me.y, me.time)
-StrandRemap → coordinator.getValue(base, strand, remappedX, remappedY, me.time)
-```
-
-**Simplifications vs old version:**
-- No caching (CPUEvaluator caches the compiled functions)
-- No multiple compilation levels (just one: AST → function)
-- No route parameter (that's renderer-specific)
-- Straightforward recursive compilation
-
-**Example output:**
-```javascript
-// Input AST: sin(me@x * 440)
-compile(sinCallNode, env) →
-  (me, env) => Math.sin(me.x * 440)
-
-// Input AST: color@r (StrandAccess)
-compile(strandAccessNode, env) →
-  (me, env) => env.coordinator.getValue('color', 'r', me.x, me.y, me.time)
-```
-
 ### Next Steps
 
-1. **Rewrite js-compiler.js** (~150 lines) DONE!
+1. ✅ **JS Compiler** - DONE! (~115 lines, supports arbitrary domains via `getValue(inst, out, me)`)
 2. **Write minimal BaseRenderer** (~25 lines, YOU WRITE)
 3. **Write CPUEvaluator** (~50 lines, YOU WRITE)
 4. **Enhance Coordinator** with timing + cpuEvaluator (~150 lines total, YOU WRITE)
