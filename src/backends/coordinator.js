@@ -1,4 +1,5 @@
 import { RenderGraph } from './render-graph.js'
+import { CPUEvaluator } from './cpu-evaluator.js'
 
 
 /*
@@ -13,6 +14,8 @@ Future renderers could include:
 - MIDI
 - Web Socket
 - uhhhhhhh
+
+- CONTEXTS vs IMPLEMENTATIONS
 */
 
 
@@ -21,12 +24,12 @@ export class Coordinator {
     this.ast = ast;
     this.env = env;
 
-    this.cpuRenderer = null;
-    this.gpuRenderer = null;
-    this.audioRenderer = null;
+    this.backends = new Map();
+    this.backendsByContext = new Map();
 
     this.graph = null;
-    this.activeRenderers = new Set();
+    this.cpuEvaluator = null;
+    this.activeBackends = new Set();
 
     this.outputStatements = [];
 
@@ -36,10 +39,26 @@ export class Coordinator {
     this.lastFrameTime = 0;
   }
 
-  setRenderers({cpu, gpu, audio}) {
-    this.cpuRenderer = cpu;
-    this.gpuRenderer = gpu;
-    this.audioRenderer = audio;
+  setBackends(backendMap) {
+    for (const [name, backend] of Object.entries(backendMap)) {
+      if (backend) {
+        this.backends.set(name, backend);
+        const ctx = backend.context;
+        if (!this.backendsByContext.has(ctx)) {
+          this.backendsByContext.set(ctx, []);
+        }
+        this.backendsByContext.get(ctx).push(name);
+      }
+    }
+  }
+
+  getBackendForContext(context) {
+    const names = this.backendsByContext.get(context) || [];
+    for (const name of names) {
+      const backend = this.backends.get(name);
+      if (backend) return backend;
+    }
+    return null;
   }
 
   async compile() {
@@ -50,6 +69,8 @@ export class Coordinator {
         nodes: graphResult.nodes.size,
         execOrder: graphResult.execOrder
     });
+
+    this.cpuEvaluator = new CPUEvaluator(this.env, this.graph);
 
     this.outputStatements =
       this.ast.statements.filter(stmt =>
@@ -64,51 +85,28 @@ export class Coordinator {
     const contextsNeeded = this.graph.getContextsNeeded();
     console.log('[Coordinator] Contexts needed:',Array.from(contextsNeeded));
 
-    if (contextsNeeded.has('visual')) {
-      this.activeRenderers.add('gpu');
-    }
-    if(contextsNeeded.has('audio')) {
-      this.activeRenderers.add('audio')
-    }
-    if(contextsNeeded.has('compute')) {
-      this.activeRenderers.add('cpu')
-    }
-
     const compilePromises = [];
 
-    if (this.activeRenderers.has('gpu') && this.gpuRenderer) {
-      compilePromises.push(
-        this.gpuRenderer.compile(this.ast, this.env)
-        .then(() => console.log('[Coordinator] GPU renderer compiled'))
-      );
-    }
-
-    if (this.activeRenderers.has('cpu') && this.cpuRenderer) {
-      compilePromises.push(
-        this.cpuRenderer.compile(this.ast, this.env)
-        .then(() => console.log('[Coordinator] CPU renderer compiled'))
-      );
-    }
-
-    if (this.activeRenderers.has('audio') && this.audioRenderer) {
-      compilePromises.push(
-        this.audioRenderer.compile(this.ast, this.env)
-        .then(() => console.log('[Coordinator] Audio renderer compiled'))
-      );
+    for (const context of contextsNeeded) {
+      const backend = this.getBackendForContext(context);
+      if (backend) {
+        backend.coordinator = this;
+        compilePromises.push( backend.compile(this.ast, this.env) .then(() =>
+          console.log(`[Coordinator] ${backend.name} compiled`))
+        );
+      }
     }
 
     await Promise.all(compilePromises);
-
     console.log('[Coordinator] Compilation complete');
   }
 
   render() {
-    if (this.activeRenderers.has('gpu') && this.gpuRenderer) {
-      this.gpuRenderer.render();
-    } else if (this.activeRenderers.has('cpu') && this.cpuRenderer) {
-      this.cpuRenderer.render();
+    for (const backend of this.backends.values()) {
+      if (backend) {
+        backend.render();
+      }
     }
-
   }
 
   start(){
@@ -146,18 +144,40 @@ export class Coordinator {
   }
 
   getValue(instName, outName, me) {
-    // TODO: Will be implemented when CPUEvaluator is added
-    // For now, return 0 as fallback
+    const node = this.graph.nodes.get(instName);
+    if (!node) {
+      console.warn(`[Coordinator] Instance "${instName}" not found`);
+      return 0;
+    }
+    const routes = node.contexts;
+
+    for (const context of routes) {
+      const backend = this.getBackendForContext(context);
+      if (backend && backend.canGetValue()) {
+        return backend.getValue(instName, outName, me);
+      }
+    }
+
+    if (this.cpuEvaluator) {
+      return this.cpuEvaluator.getValue(instName, outName, me);
+    }
+
+    console.warn(`[Coordinator] No way to evaluate ${instName}@${outName}`);
     return 0;
   }
 
   cleanup(){
     this.stop();
-    if (this.cpuRenderer) this.cpuRenderer.cleanup?.();
-    if (this.gpuRenderer) this.gpuRenderer.cleanup?.();
-    if (this.audioRenderer) this.audioRenderer.cleanup?.();
 
-    this.activeRenderers.clear();
+    for (const backend of this.backends.values()) {
+      if (backend && backend.cleanup) {
+        backend.cleanup();
+      }
+    }
+
+    this.backends.clear();
+    this.backendsByContext.clear();
+    this.activeBackends.clear();
     this.outputStatements = [];
     this.graph = null;
   }
