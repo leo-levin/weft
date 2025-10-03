@@ -12,7 +12,7 @@ Future renderers could include:
 - OSC/NDI
 - MIDI
 - Web Socket
-- uhhhhhhhF
+- uhhhhhhh
 */
 
 
@@ -29,6 +29,11 @@ export class Coordinator {
     this.activeRenderers = new Set();
 
     this.outputStatements = [];
+
+    // Timing control
+    this.running = false;
+    this.frameId = null;
+    this.lastFrameTime = 0;
   }
 
   setRenderers({cpu, gpu, audio}) {
@@ -104,10 +109,50 @@ export class Coordinator {
       this.cpuRenderer.render();
     }
 
-    // Audio rendering happens automatically in worklet (no explicit render call)
+  }
+
+  start(){
+    if(this.running) return;
+
+    this.running = true;
+    this.lastFrameTime = performance.now();
+    this.mainLoop();
+    console.log('[Coord] render loop started')
+
+  }
+
+  mainLoop() {
+    if (!this.running) return;
+
+    const cur_time = performance.now();
+    const delta = cur_time - this.lastFrameTime;
+    const targetDelta = 1000 / this.env.targetFps;
+
+    if (delta >= targetDelta) {
+      this.env.frame++;
+      this.render();
+      this.lastFrameTime = cur_time;
+    }
+    this.frameId = requestAnimationFrame(() => this.mainLoop());
+  }
+
+  stop() {
+    this.running = false;
+    if (this.frameId) {
+      cancelAnimationFrame(this.frameId);
+      this.frameId = null;
+    }
+    console.log('[Coord] render loop stopped');
+  }
+
+  getValue(instName, outName, me) {
+    // TODO: Will be implemented when CPUEvaluator is added
+    // For now, return 0 as fallback
+    return 0;
   }
 
   cleanup(){
+    this.stop();
     if (this.cpuRenderer) this.cpuRenderer.cleanup?.();
     if (this.gpuRenderer) this.gpuRenderer.cleanup?.();
     if (this.audioRenderer) this.audioRenderer.cleanup?.();
