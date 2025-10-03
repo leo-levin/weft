@@ -36,18 +36,18 @@ function compileToJS(node, env) {
       "measure", () => "measure",
       "abstime", () => "abstime",
       "absframe", () => "absframe",
-      _, () => "0"
+      _, (n) => "0"
     ),
     inst(MouseExpr, _), (field) => field == "x" ? "mx" : field === "y" ? "my" : "0",
-    inst(BinaryExpr, _,_,_), (left, right, op) => {
+    inst(BinaryExpr, _,_,_), (op, left, right) => {
       const leftCode = compileToJS(left, env);
       const rightCode = compileToJS(right, env);
 
       return match(op,
         "+", () =>`(${leftCode}+${rightCode})`,
         "-", () =>`(${leftCode}-${rightCode})`,
-        "*", () =>`(${leftCode}*${rightCode})`,
-        "/", () =>`(${leftCode}/${rightCode} || (1e-9))`,
+        "*", () =>`(${leftCode} * ${rightCode})`,
+        "/", () =>`(${rightCode}===0?1e-9:${leftCode}/${rightCode})`,
         "^", () => `Math.pow(${leftCode},${rightCode})`,
         "%", () => `((${leftCode}%${rightCode}+${rightCode})%${rightCode})`,
         "==", () => `(${leftCode}===${rightCode}?1:0)`,
@@ -66,7 +66,7 @@ function compileToJS(node, env) {
       return match(op,
         "-", () => `(-${arg})`,
         "NOT", () => `(${arg}?0:1)`,
-        _, () => {
+        _, (n) => {
           const mathFn = getMathFunction(op);
           return mathFn ? `${mathFn}(${arg})` : `(-${arg})`;
         }
@@ -93,7 +93,7 @@ function compileToJS(node, env) {
           return `(${argCodes[0]}<0?0:${argCodes[0]}>1?1:${argCodes[0]})`;
         },
         "noise", () => `env.__noise3(${argCodes[0]}*3.1,${argCodes[1]}*3.1,${argCodes[2]}*0.5)`,
-        _, () => `Math.sin(${argCodes.join(',')})`
+        _, (n) => `Math.sin(${argCodes.join(',')})`
       );
     },
     inst(VarExpr, _), (name) => `env.getVar("${name}")`,

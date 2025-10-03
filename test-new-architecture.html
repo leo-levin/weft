@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WEFT Architecture Test Suite</title>
+  <style>
+    body {
+      font-family: 'Monaco', 'Courier New', monospace;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 20px;
+      margin: 0;
+    }
+    #output {
+      white-space: pre-wrap;
+      line-height: 1.6;
+    }
+    .section {
+      color: #4ec9b0;
+      font-weight: bold;
+      margin-top: 20px;
+    }
+    .subsection {
+      color: #569cd6;
+      margin-top: 10px;
+    }
+    .pass {
+      color: #4ec9b0;
+    }
+    .fail {
+      color: #f48771;
+    }
+    .summary {
+      margin-top: 30px;
+      padding: 20px;
+      background: #252526;
+      border-left: 4px solid #4ec9b0;
+    }
+    .error-detail {
+      color: #ce9178;
+      margin-left: 20px;
+    }
+  </style>
+  <script src="https://unpkg.com/ohm-js@17/dist/ohm.min.js"></script>
+</head>
+<body>
+  <h1>WEFT Architecture Test Suite</h1>
+  <div id="output"></div>
+
+  <script type="module">
+    import { Env } from './src/runtime/runtime-new.js';
+    import { parse } from './src/lang/parser-new.js';
+    import { Coordinator } from './src/backends/coordinator.js';
+    import { CPUEvaluator } from './src/backends/cpu-evaluator.js';
+    import { RenderGraph } from './src/backends/render-graph.js';
+    import { compile } from './src/compilers/compiler-new.js';
+    import { BaseBackend } from './src/backends/base-backend.js';
+    import {
+      NumExpr,
+      MeExpr,
+      BinaryExpr,
+      UnaryExpr,
+      CallExpr
+    } from './src/ast/ast-node.js';
+
+    // Test utilities
+    let testsPassed = 0;
+    let testsFailed = 0;
+    const output = document.getElementById('output');
+
+    function log(msg, className = '') {
+      const div = document.createElement('div');
+      div.textContent = msg;
+      if (className) div.className = className;
+      output.appendChild(div);
+      console.log(msg);
+    }
+
+    function assert(condition, message) {
+      if (condition) {
+        testsPassed++;
+      } else {
+        log(`❌ ${message}`, 'fail');
+        testsFailed++;
+      }
+    }
+
+    function assertEquals(actual, expected, message) {
+      if (actual === expected) {
+        testsPassed++;
+      } else {
+        log(`❌ ${message}`, 'fail');
+        log(`   Expected: ${expected}`, 'error-detail');
+        log(`   Actual: ${actual}`, 'error-detail');
+        testsFailed++;
+      }
+    }
+
+    function assertClose(actual, expected, tolerance, message) {
+      if (Math.abs(actual - expected) < tolerance) {
+        testsPassed++;
+      } else {
+        log(`❌ ${message}`, 'fail');
+        log(`   Expected: ${expected} ± ${tolerance}`, 'error-detail');
+        log(`   Actual: ${actual}`, 'error-detail');
+        testsFailed++;
+      }
+    }
+
+    function section(name) {
+      log('\n' + '='.repeat(60), 'section');
+      log(`  ${name}`, 'section');
+      log('='.repeat(60), 'section');
+    }
+
+    function subsection(name) {
+      log(`\n--- ${name} ---`, 'subsection');
+    }
+
+    // Mock backend for testing
+    class MockBackend extends BaseBackend {
+      constructor(env, name, context) {
+        super(env, name, context);
+        this.compiled = false;
+        this.rendered = false;
+        this.cleanedUp = false;
+      }
+
+      async compile(ast, env) {
+        this.compiled = true;
+      }
+
+      render() {
+        this.rendered = true;
+      }
+
+      cleanup() {
+        this.cleanedUp = true;
+      }
+
+      canGetValue() {
+        return false;
+      }
+    }
+
+    class EfficientMockBackend extends MockBackend {
+      constructor(env, name, context) {
+        super(env, name, context);
+        this.getValueCalls = 0;
+      }
+
+      canGetValue() {
+        return true;
+      }
+
+      getValue(instName, outName, me) {
+        this.getValueCalls++;
+        return 42;
+      }
+    }
+
+    // ============================================================================
+    // TEST SUITE
+    // ============================================================================
+
+    async function runTests() {
+      section('TEST 1: Compiler - Expression Compilation');
+
+      const env = new Env();
+
+      subsection('1.1: Numeric Literals');
+      const numExpr = new NumExpr(3.14);
+      const numFn = compile(numExpr, env);
+      const me = { x: 0, y: 0, time: 0, frame: 0, width: 100, height: 100 };
+      assertClose(numFn(me, env), 3.14, 0.001, 'Numeric literal compiles');
+
+      subsection('1.2: Me Expressions');
+      const meXExpr = new MeExpr('x');
+      const meXFn = compile(meXExpr, env);
+      me.x = 0.75;
+      assertClose(meXFn(me, env), 0.75, 0.001, 'me@x compiles');
+
+      subsection('1.3: Binary Expressions');
+      const addExpr = new BinaryExpr('+', new NumExpr(10), new NumExpr(5));
+      const addFn = compile(addExpr, env);
+      assertClose(addFn(me, env), 15, 0.001, 'Addition compiles');
+
+      const mulExpr = new BinaryExpr('*', new NumExpr(3), new NumExpr(4));
+      const mulFn = compile(mulExpr, env);
+      assertClose(mulFn(me, env), 12, 0.001, 'Multiplication compiles');
+
+      subsection('1.4: Unary Expressions');
+      const sinExpr = new UnaryExpr('sin', new NumExpr(0));
+      const sinFn = compile(sinExpr, env);
+      assertClose(sinFn(me, env), 0, 0.001, 'sin(0) compiles');
+
+      subsection('1.5: Call Expressions');
+      const maxExpr = new CallExpr('max', [new NumExpr(10), new NumExpr(20)]);
+      const maxFn = compile(maxExpr, env);
+      assertClose(maxFn(me, env), 20, 0.001, 'max(10, 20) compiles');
+
+      subsection('1.6: Nested Expressions');
+      const nestedExpr = new BinaryExpr('+',
+        new BinaryExpr('*', new NumExpr(2), new NumExpr(3)),
+        new BinaryExpr('*', new NumExpr(4), new NumExpr(5))
+      );
+      const nestedFn = compile(nestedExpr, env);
+      assertClose(nestedFn(me, env), 26, 0.001, '(2*3) + (4*5) = 26');
+
+      subsection('1.7: Division by Zero Protection');
+      const divExpr = new BinaryExpr('/', new NumExpr(10), new NumExpr(0));
+      const divFn = compile(divExpr, env);
+      const divResult = divFn(me, env);
+      assert(isFinite(divResult), 'Division by zero returns finite number');
+
+      subsection('1.8: Modulo Operation');
+      const modExpr = new BinaryExpr('%', new NumExpr(7), new NumExpr(3));
+      const modFn = compile(modExpr, env);
+      assertClose(modFn(me, env), 1, 0.001, '7 % 3 = 1');
+
+      subsection('1.9: Power Operation');
+      const powExpr = new BinaryExpr('^', new NumExpr(2), new NumExpr(8));
+      const powFn = compile(powExpr, env);
+      assertClose(powFn(me, env), 256, 0.001, '2^8 = 256');
+
+      subsection('1.10: Comparison Operators');
+      const ltExpr = new BinaryExpr('<<', new NumExpr(3), new NumExpr(5));
+      const ltFn = compile(ltExpr, env);
+      assertClose(ltFn(me, env), 1, 0.001, '3 < 5 returns 1');
+
+      const gtExpr = new BinaryExpr('>>', new NumExpr(5), new NumExpr(3));
+      const gtFn = compile(gtExpr, env);
+      assertClose(gtFn(me, env), 1, 0.001, '5 > 3 returns 1');
+
+      const eqExpr = new BinaryExpr('==', new NumExpr(5), new NumExpr(5));
+      const eqFn = compile(eqExpr, env);
+      assertClose(eqFn(me, env), 1, 0.001, '5 == 5 returns 1');
+
+      subsection('1.11: Multiple Me Fields');
+      const meTimeExpr = new MeExpr('time');
+      const meTimeFn = compile(meTimeExpr, env);
+      me.time = 2.5;
+      assertClose(meTimeFn(me, env), 2.5, 0.001, 'me@time compiles');
+
+      const meFrameExpr = new MeExpr('frame');
+      const meFrameFn = compile(meFrameExpr, env);
+      me.frame = 100;
+      assertClose(meFrameFn(me, env), 100, 0.001, 'me@frame compiles');
+
+      subsection('1.12: Clamp Function');
+      const clampExpr = new CallExpr('clamp', [
+        new NumExpr(1.5),
+        new NumExpr(0),
+        new NumExpr(1)
+      ]);
+      const clampFn = compile(clampExpr, env);
+      assertClose(clampFn(me, env), 1, 0.001, 'clamp(1.5, 0, 1) = 1');
+
+      subsection('1.13: Math Functions');
+      const sqrtExpr = new UnaryExpr('sqrt', new NumExpr(16));
+      const sqrtFn = compile(sqrtExpr, env);
+      assertClose(sqrtFn(me, env), 4, 0.001, 'sqrt(16) = 4');
+
+      const absExpr = new UnaryExpr('abs', new NumExpr(-5));
+      const absFn = compile(absExpr, env);
+      assertClose(absFn(me, env), 5, 0.001, 'abs(-5) = 5');
+
+      // ============================================================================
+      section('TEST 2: RenderGraph - Graph Building');
+
+      const weftCode = `
+        base<val> = me@x + me@y
+        derived<a> = base@val
+        derived<b> = base@val * 0.5
+        derived<c> = 0.2
+
+        display(derived@a, derived@b, derived@c)
+      `;
+
+      subsection('2.1: Parse and Build Graph');
+      const ast = parse(weftCode);
+      assert(ast, 'AST parsed successfully');
+
+      const graph = new RenderGraph(ast, env);
+      const graphResult = graph.build();
+
+      assert(graphResult.nodes.size > 0, 'Graph has nodes');
+      assert(graphResult.execOrder.length > 0, 'Execution order computed');
+
+      subsection('2.2: Instance Collection');
+      assert(graphResult.nodes.has('base'), 'base instance collected');
+      assert(graphResult.nodes.has('derived'), 'derived instance collected');
+
+      const baseNode = graphResult.nodes.get('base');
+      assert(baseNode.outputs.has('val'), 'base has @val output');
+
+      const derivedNode = graphResult.nodes.get('derived');
+      assert(derivedNode.outputs.has('a'), 'derived has @a output');
+      assert(derivedNode.outputs.has('b'), 'derived has @b output');
+      assert(derivedNode.outputs.has('c'), 'derived has @c output');
+
+      subsection('2.3: Dependency Extraction');
+      assert(derivedNode.deps.has('base'), 'derived depends on base');
+
+      subsection('2.4: Topological Sort');
+      const baseIndex = graphResult.execOrder.indexOf('base');
+      const derivedIndex = graphResult.execOrder.indexOf('derived');
+      assert(baseIndex < derivedIndex, 'base comes before derived in exec order');
+
+      subsection('2.5: Context Tagging');
+      const outputStmts = ast.statements.filter(s =>
+        s.type === 'DisplayStmt' || s.type === 'PlayStmt' || s.type === 'RenderStmt'
+      );
+      graph.tagContexts(outputStmts);
+
+      assert(baseNode.contexts.has('visual'), 'base tagged with visual context');
+      assert(derivedNode.contexts.has('visual'), 'derived tagged with visual context');
+
+      const contextsNeeded = graph.getContextsNeeded();
+      assert(contextsNeeded.has('visual'), 'visual context needed');
+
+      // ============================================================================
+      section('TEST 3: CPUEvaluator - Expression Evaluation');
+
+      subsection('3.1: Create CPUEvaluator');
+      const evaluator = new CPUEvaluator(env, graph);
+      assert(evaluator, 'CPUEvaluator created');
+
+      // Set up minimal coordinator so strand access works
+      env.coordinator = {
+        getValue: (inst, out, me) => evaluator.getValue(inst, out, me)
+      };
+
+      subsection('3.2: Evaluate Simple Expression');
+      const testMe = {
+        x: 0.5,
+        y: 0.3,
+        time: 1.0,
+        frame: 30,
+        width: 100,
+        height: 100,
+        fps: 30,
+        loop: 600,
+        bpm: 120,
+        beat: 0,
+        measure: 0,
+        abstime: 1.0,
+        absframe: 30
+      };
+
+      const baseValue = evaluator.getValue('base', 'val', testMe);
+      assertClose(baseValue, 0.8, 0.001, 'base@val = me@x + me@y = 0.5 + 0.3');
+
+      subsection('3.3: Function Caching');
+      const cachedValue = evaluator.getValue('base', 'val', testMe);
+      assertClose(cachedValue, 0.8, 0.001, 'Cached function returns same result');
+
+      subsection('3.4: Different Coordinates');
+      const testMe2 = { ...testMe, x: 1.0, y: 0.0 };
+      const baseValue2 = evaluator.getValue('base', 'val', testMe2);
+      assertClose(baseValue2, 1.0, 0.001, 'Different coordinates work');
+
+      subsection('3.5: Dependent Expression');
+      const derivedA = evaluator.getValue('derived', 'a', testMe);
+      assertClose(derivedA, 0.8, 0.001, 'derived@a = base@val');
+
+      const derivedB = evaluator.getValue('derived', 'b', testMe);
+      assertClose(derivedB, 0.4, 0.001, 'derived@b = base@val * 0.5');
+
+      subsection('3.6: Error Handling - Missing Instance');
+      const missingInst = evaluator.getValue('nonexistent', 'r', testMe);
+      assertEquals(missingInst, 0, 'Missing instance returns 0');
+
+      subsection('3.7: Error Handling - Missing Output');
+      const missingOut = evaluator.getValue('base', 'nonexistent', testMe);
+      assertEquals(missingOut, 0, 'Missing output returns 0');
+
+      subsection('3.8: Clear Cache');
+      evaluator.clear();
+      assert(evaluator.compiledFunctions.size === 0, 'Cache cleared');
+
+      // ============================================================================
+      section('TEST 4: Coordinator - Backend Management');
+
+      subsection('4.1: Create Coordinator');
+      const coordinator = new Coordinator(ast, env);
+      assert(coordinator, 'Coordinator created');
+
+      subsection('4.2: Register Backends');
+      const visualBackend = new MockBackend(env, 'webgl', 'visual');
+      const audioBackend = new MockBackend(env, 'audio', 'audio');
+      const computeBackend = new MockBackend(env, 'cpu', 'compute');
+
+      coordinator.setBackends({
+        webgl: visualBackend,
+        audio: audioBackend,
+        cpu: computeBackend
+      });
+
+      assert(coordinator.backends.size === 3, 'Three backends registered');
+      assert(coordinator.backends.has('webgl'), 'webgl backend registered');
+
+      subsection('4.3: Context Mapping');
+      assert(coordinator.backendsByContext.has('visual'), 'visual context mapped');
+      assert(coordinator.backendsByContext.has('audio'), 'audio context mapped');
+      assert(coordinator.backendsByContext.has('compute'), 'compute context mapped');
+
+      subsection('4.4: Get Backend for Context');
+      const visual = coordinator.getBackendForContext('visual');
+      assert(visual === visualBackend, 'visual context returns webgl backend');
+
+      const audio = coordinator.getBackendForContext('audio');
+      assert(audio === audioBackend, 'audio context returns audio backend');
+
+      subsection('4.5: Compilation');
+      await coordinator.compile();
+      assert(visualBackend.compiled, 'Visual backend compiled');
+      assert(coordinator.cpuEvaluator, 'CPUEvaluator created during compile');
+
+      subsection('4.6: Rendering');
+      coordinator.render();
+      assert(visualBackend.rendered, 'Visual backend rendered');
+
+      subsection('4.7: getValue - Backend with canGetValue');
+      const efficientBackend = new EfficientMockBackend(env, 'metal', 'visual');
+
+      const coordinator2 = new Coordinator(ast, env);
+      coordinator2.setBackends({ metal: efficientBackend });
+      await coordinator2.compile();
+
+      const value = coordinator2.getValue('base', 'val', testMe);
+      assertEquals(value, 42, 'Efficient backend getValue called');
+      assert(efficientBackend.getValueCalls > 0, 'Backend getValue was called');
+
+      subsection('4.8: getValue - Fallback to CPUEvaluator');
+      const regularBackend = new MockBackend(env, 'webgl', 'visual');
+      const coordinator3 = new Coordinator(ast, env);
+      coordinator3.setBackends({ webgl: regularBackend });
+      await coordinator3.compile();
+
+      const value2 = coordinator3.getValue('base', 'val', testMe);
+      assertClose(value2, 0.8, 0.001, 'Falls back to CPUEvaluator when backend cannot getValue');
+
+      subsection('4.9: Cleanup');
+      coordinator.cleanup();
+      assert(visualBackend.cleanedUp, 'Visual backend cleaned up');
+      assert(coordinator.backends.size === 0, 'Backends cleared');
+      assert(coordinator.backendsByContext.size === 0, 'Context map cleared');
+
+      // ============================================================================
+      section('TEST 5: Integration - Cross-Context Access');
+
+      const crossContextCode = `
+        audio<left> = me@x * 440
+        visual<r> = audio@left / 1000
+
+        display(visual@r, 0, 0)
+      `;
+
+      subsection('5.1: Parse Cross-Context Code');
+      const crossAst = parse(crossContextCode);
+      assert(crossAst, 'Cross-context AST parsed');
+
+      subsection('5.2: Build Graph');
+      const crossGraph = new RenderGraph(crossAst, env);
+      crossGraph.build();
+
+      const audioNode = crossGraph.nodes.get('audio');
+      const visualNode = crossGraph.nodes.get('visual');
+
+      assert(audioNode, 'audio instance in graph');
+      assert(visualNode, 'visual instance in graph');
+      assert(visualNode.deps.has('audio'), 'visual depends on audio');
+
+      subsection('5.3: Tag Contexts');
+      const crossOutputStmts = crossAst.statements.filter(s => s.type === 'DisplayStmt');
+      crossGraph.tagContexts(crossOutputStmts);
+
+      assert(visualNode.contexts.has('visual'), 'visual tagged with visual context');
+      assert(audioNode.contexts.has('visual'), 'audio tagged with visual context (dependency)');
+
+      subsection('5.4: Evaluate Cross-Context Expression');
+      const crossEvaluator = new CPUEvaluator(env, crossGraph);
+
+      // Set up minimal coordinator for strand access
+      env.coordinator = {
+        getValue: (inst, out, me) => crossEvaluator.getValue(inst, out, me)
+      };
+
+      const crossMe = { ...testMe, x: 1.0 };
+
+      const audioLeft = crossEvaluator.getValue('audio', 'left', crossMe);
+      assertClose(audioLeft, 440, 0.001, 'audio@left = me@x * 440 = 1.0 * 440');
+
+      const visualR = crossEvaluator.getValue('visual', 'r', crossMe);
+      assertClose(visualR, 0.44, 0.001, 'visual@r = audio@left / 1000 = 440 / 1000');
+
+      // ============================================================================
+      section('TEST 6: Coordinator Timing Control');
+
+      subsection('6.1: Start/Stop');
+      const timingCoord = new Coordinator(ast, env);
+      timingCoord.setBackends({ webgl: new MockBackend(env, 'webgl', 'visual') });
+      await timingCoord.compile();
+
+      assert(!timingCoord.running, 'Initially not running');
+
+      timingCoord.start();
+      assert(timingCoord.running, 'Started successfully');
+      assert(timingCoord.frameId !== null, 'Frame ID set');
+
+      timingCoord.stop();
+      assert(!timingCoord.running, 'Stopped successfully');
+      assert(timingCoord.frameId === null, 'Frame ID cleared');
+
+      // ============================================================================
+      section('TEST 7: Instance Dependency and Evaluation');
+
+      const varCode = `
+        myvar<x> = 10
+        doubled<val> = myvar@x * 2
+
+        display(doubled@val, 0, 0)
+      `;
+
+      subsection('7.1: Parse Instance Chain');
+      const varAst = parse(varCode);
+      assert(varAst, 'Variable code parsed');
+
+      subsection('7.2: Build Graph');
+      const varGraph = new RenderGraph(varAst, env);
+      varGraph.build();
+
+      subsection('7.3: Evaluate Instance Chain');
+      const varEvaluator = new CPUEvaluator(env, varGraph);
+      env.coordinator = {
+        getValue: (inst, out, me) => varEvaluator.getValue(inst, out, me)
+      };
+
+      const doubledVal = varEvaluator.getValue('doubled', 'val', testMe);
+      assertClose(doubledVal, 20, 0.001, 'doubled@val = myvar * 2 = 10 * 2');
+
+      // ============================================================================
+      section('TEST 8: Complex Dependency Chains');
+
+      const chainCode = `
+        a<val> = me@x
+        b<val> = a@val * 2
+        c<val> = b@val + 10
+        d<val> = c@val / 2
+        e<val> = d@val - 5
+
+        display(e@val, 0, 0)
+      `;
+
+      subsection('8.1: Parse Chain');
+      const chainAst = parse(chainCode);
+      assert(chainAst, 'Chain code parsed');
+
+      subsection('8.2: Build Dependency Chain');
+      const chainGraph = new RenderGraph(chainAst, env);
+      const chainResult = chainGraph.build();
+
+      const aNode = chainResult.nodes.get('a');
+      const bNode = chainResult.nodes.get('b');
+      const cNode = chainResult.nodes.get('c');
+      const dNode = chainResult.nodes.get('d');
+      const eNode = chainResult.nodes.get('e');
+
+      assert(bNode.deps.has('a'), 'b depends on a');
+      assert(cNode.deps.has('b'), 'c depends on b');
+      assert(dNode.deps.has('c'), 'd depends on c');
+      assert(eNode.deps.has('d'), 'e depends on d');
+
+      subsection('8.3: Topological Order');
+      const aIdx = chainResult.execOrder.indexOf('a');
+      const bIdx = chainResult.execOrder.indexOf('b');
+      const cIdx = chainResult.execOrder.indexOf('c');
+      const dIdx = chainResult.execOrder.indexOf('d');
+      const eIdx = chainResult.execOrder.indexOf('e');
+
+      assert(aIdx < bIdx && bIdx < cIdx && cIdx < dIdx && dIdx < eIdx,
+        'Chain ordered correctly: a < b < c < d < e');
+
+      subsection('8.4: Evaluate Full Chain');
+      const chainEvaluator = new CPUEvaluator(env, chainGraph);
+      env.coordinator = {
+        getValue: (inst, out, me) => chainEvaluator.getValue(inst, out, me)
+      };
+
+      const chainMe = { ...testMe, x: 1.0 };
+      // a = 1.0, b = 2.0, c = 12.0, d = 6.0, e = 1.0
+      const eVal = chainEvaluator.getValue('e', 'val', chainMe);
+      assertClose(eVal, 1.0, 0.001, 'e@val = ((1.0*2+10)/2)-5 = 1.0');
+
+      // ============================================================================
+      section('TEST 9: Multiple Outputs Per Instance');
+
+      const multiCode = `
+        rgb<r> = me@x
+        rgb<g> = me@y
+        rgb<b> = me@x * me@y
+
+        display(rgb@r, rgb@g, rgb@b)
+      `;
+
+      subsection('9.1: Parse Multiple Outputs');
+      const multiAst = parse(multiCode);
+      assert(multiAst, 'Multi-output code parsed');
+
+      subsection('9.2: Graph Collects All Outputs');
+      const multiGraph = new RenderGraph(multiAst, env);
+      multiGraph.build();
+
+      const rgbNode = multiGraph.nodes.get('rgb');
+      assert(rgbNode.outputs.has('r'), 'rgb has @r');
+      assert(rgbNode.outputs.has('g'), 'rgb has @g');
+      assert(rgbNode.outputs.has('b'), 'rgb has @b');
+      assertEquals(rgbNode.outputs.size, 3, 'rgb has exactly 3 outputs');
+
+      subsection('9.3: Evaluate Multiple Outputs');
+      const multiEvaluator = new CPUEvaluator(env, multiGraph);
+      env.coordinator = {
+        getValue: (inst, out, me) => multiEvaluator.getValue(inst, out, me)
+      };
+
+      const multiMe = { ...testMe, x: 0.6, y: 0.4 };
+      const rVal = multiEvaluator.getValue('rgb', 'r', multiMe);
+      const gVal = multiEvaluator.getValue('rgb', 'g', multiMe);
+      const bVal = multiEvaluator.getValue('rgb', 'b', multiMe);
+
+      assertClose(rVal, 0.6, 0.001, 'rgb@r = me@x = 0.6');
+      assertClose(gVal, 0.4, 0.001, 'rgb@g = me@y = 0.4');
+      assertClose(bVal, 0.24, 0.001, 'rgb@b = me@x * me@y = 0.24');
+
+      // ============================================================================
+      section('TEST 10: Circular Dependency Detection');
+
+      const circularCode = `
+        circ1<val> = circ2@val + 1
+        circ2<val> = circ1@val + 1
+
+        display(circ1@val, 0, 0)
+      `;
+
+      subsection('10.1: Parse Circular Code');
+      const circularAst = parse(circularCode);
+      assert(circularAst, 'Circular code parsed');
+
+      subsection('10.2: Detect Circular Dependency');
+      const circularGraph = new RenderGraph(circularAst, env);
+      let circularError = null;
+      try {
+        circularGraph.build();
+      } catch (e) {
+        circularError = e;
+      }
+      assert(circularError !== null, 'Circular dependency throws error');
+      assert(circularError.message.includes('Circular'), 'Error message mentions circular dependency');
+
+      // ============================================================================
+      section('TEST 11: Edge Cases - Empty and Minimal');
+
+      subsection('11.1: Empty Program');
+      const emptyAst = parse('');
+      assert(emptyAst, 'Empty program parses');
+      const emptyGraph = new RenderGraph(emptyAst, env);
+      const emptyResult = emptyGraph.build();
+      assertEquals(emptyResult.nodes.size, 0, 'Empty program has no nodes');
+
+      subsection('11.2: Single Instance, Single Output');
+      const singleCode = `
+        single<out> = 42
+        display(single@out, 0, 0)
+      `;
+      const singleAst = parse(singleCode);
+      const singleGraph = new RenderGraph(singleAst, env);
+      singleGraph.build();
+
+      const singleEvaluator = new CPUEvaluator(env, singleGraph);
+      env.coordinator = {
+        getValue: (inst, out, me) => singleEvaluator.getValue(inst, out, me)
+      };
+
+      const singleVal = singleEvaluator.getValue('single', 'out', testMe);
+      assertClose(singleVal, 42, 0.001, 'Single instance evaluates to 42');
+
+      subsection('11.3: Zero Value');
+      const zeroCode = `zero<val> = 0`;
+      const zeroAst = parse(zeroCode);
+      const zeroGraph = new RenderGraph(zeroAst, env);
+      zeroGraph.build();
+
+      const zeroEvaluator = new CPUEvaluator(env, zeroGraph);
+      env.coordinator = {
+        getValue: (inst, out, me) => zeroEvaluator.getValue(inst, out, me)
+      };
+
+      const zeroVal = zeroEvaluator.getValue('zero', 'val', testMe);
+      assertClose(zeroVal, 0, 0.001, 'Zero value compiles correctly');
+
+      subsection('11.4: Negative Numbers');
+      const negCode = `neg<val> = -123.45`;
+      const negAst = parse(negCode);
+      const negGraph = new RenderGraph(negAst, env);
+      negGraph.build();
+
+      const negEvaluator = new CPUEvaluator(env, negGraph);
+      env.coordinator = {
+        getValue: (inst, out, me) => negEvaluator.getValue(inst, out, me)
+      };
+
+      const negVal = negEvaluator.getValue('neg', 'val', testMe);
+      assertClose(negVal, -123.45, 0.001, 'Negative number compiles correctly');
+
+      // ============================================================================
+      section('TEST 12: Stress Test - Many Instances');
+
+      subsection('12.1: Generate Many Instances');
+
+      // Generate 10 instances with dependency chain
+      // Using 'n' prefix instead of 'inst' to avoid reserved keywords
+      const stressLines = [];
+      for (let i = 0; i < 10; i++) {
+        stressLines.push(`n${i}<val> = me@x * ${i}`);
+      }
+      const stressCode = stressLines.join('\n');
+
+      const stressAst = parse(stressCode);
+      assert(stressAst, 'Stress test code parsed successfully');
+
+      const stressGraph = new RenderGraph(stressAst, env);
+      const stressResult = stressGraph.build();
+
+      assertEquals(stressResult.nodes.size, 10, '10 instances created');
+      assertEquals(stressResult.execOrder.length, 10, '10 instances in exec order');
+
+      subsection('12.2: Evaluate Multiple Instances');
+      const stressEvaluator = new CPUEvaluator(env, stressGraph);
+      env.coordinator = {
+        getValue: (inst, out, me) => stressEvaluator.getValue(inst, out, me)
+      };
+
+      const stressMe = { ...testMe, x: 2.0 };
+      const n0Val = stressEvaluator.getValue('n0', 'val', stressMe);
+      const n5Val = stressEvaluator.getValue('n5', 'val', stressMe);
+      const n9Val = stressEvaluator.getValue('n9', 'val', stressMe);
+
+      assertClose(n0Val, 0, 0.001, 'n0 = 2.0 * 0 = 0');
+      assertClose(n5Val, 10, 0.001, 'n5 = 2.0 * 5 = 10');
+      assertClose(n9Val, 18, 0.001, 'n9 = 2.0 * 9 = 18');
+
+      subsection('12.3: Cache Behavior');
+      // Clear cache from previous subsection
+      stressEvaluator.clear();
+      assertEquals(stressEvaluator.compiledFunctions.size, 0, 'Cache starts empty after clear');
+
+      // Call each getValue - should populate cache
+      for (let i = 0; i < 10; i++) {
+        stressEvaluator.getValue(`n${i}`, 'val', stressMe);
+      }
+      assertEquals(stressEvaluator.compiledFunctions.size, 10, 'Cache populated with 10 functions');
+
+      // Call again - cache should not grow
+      stressEvaluator.getValue('n5', 'val', stressMe);
+      assertEquals(stressEvaluator.compiledFunctions.size, 10, 'Cache size unchanged on repeat call');
+
+      // Clear and verify
+      stressEvaluator.clear();
+      assertEquals(stressEvaluator.compiledFunctions.size, 0, 'Cache cleared successfully');
+
+      // Call one more time - should repopulate with 1 entry
+      stressEvaluator.getValue('n7', 'val', stressMe);
+      assertEquals(stressEvaluator.compiledFunctions.size, 1, 'Cache repopulates after clear');
+
+      // ============================================================================
+      section('TEST SUMMARY');
+
+      log('\n' + '='.repeat(60), 'summary');
+      log(`Total Tests: ${testsPassed + testsFailed}`, 'summary');
+      log(`✅ Passed: ${testsPassed}`, 'summary');
+      log(`❌ Failed: ${testsFailed}`, 'summary');
+      log(`Success Rate: ${((testsPassed / (testsPassed + testsFailed)) * 100).toFixed(1)}%`, 'summary');
+      log('='.repeat(60), 'summary');
+
+      if (testsFailed === 0) {
+        log('\n🎉 ALL TESTS PASSED! 🎉\n', 'summary');
+      } else {
+        log(`\n⚠️  ${testsFailed} test(s) failed\n`, 'summary');
+      }
+    }
+
+    // Run tests when page loads
+    runTests().catch(err => {
+      log('Test suite crashed: ' + err.message, 'fail');
+      console.error(err);
+    });
+  </script>
+</body>
+</html>
