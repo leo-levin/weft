@@ -82,7 +82,15 @@ export class Coordinator {
 
     this.graph.tagContexts(this.outputStatements);
 
-    const contextsNeeded = this.graph.getContextsNeeded();
+    // Determine contexts from output statements directly
+    const contextsNeeded = new Set();
+    for (const stmt of this.outputStatements) {
+      const context = this.graph.getStmtContext(stmt);
+      if (context) {
+        contextsNeeded.add(context);
+      }
+    }
+
     console.log('[Coordinator] Contexts needed:',Array.from(contextsNeeded));
 
     const compilePromises = [];
@@ -99,6 +107,7 @@ export class Coordinator {
 
     await Promise.all(compilePromises);
     console.log('[Coordinator] Compilation complete');
+    return true;
   }
 
   render() {

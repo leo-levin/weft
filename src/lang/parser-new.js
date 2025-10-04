@@ -84,8 +84,7 @@ const grammar = ohm.grammar(`
                 | number
                 | string
 
-    AxisMapping = ident sym<"~"> Expr
-
+    AxisMapping = Expr sym<"~"> Expr
 
     ident = ~keyword letter identRest* space*
     identRest = letter | digit | "_"
@@ -262,7 +261,8 @@ const semantics = grammar.createSemantics()
   },
 
   PrimaryExpr_strandRemap(base, _at, strand, _lp, mappings, _rp) {
-    // mappings is now an array of {axis: 'x', expr: ...} objects
+    // mappings is ListOf<AxisMapping, ",">
+    // Each AxisMapping is {expr: sourceExpr, axis: 'x'/'y'/etc}
     return new StrandRemapExpr(
       new VarExpr(base.toAST()),
       strand.toAST(),
@@ -315,10 +315,10 @@ const semantics = grammar.createSemantics()
   },
 
   // ======== HELPERS ========
-  AxisMapping(axis, _tilde, expr) {
+  AxisMapping(sourceExpr, _tilde, targetExpr) {
     return {
-      axis: axis.toAST(),
-      expr: expr.toAST()
+      source: sourceExpr.toAST(),
+      target: targetExpr.toAST()
     };
   },
 

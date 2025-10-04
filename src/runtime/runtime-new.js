@@ -4,8 +4,8 @@ import { match, _ } from '../utils/match.js';
 import { RenderGraph } from '../backends/render-graph.js';
 import { Coordinator } from '../backends/coordinator.js';
 
-import { WebGLBackend } from '../backends/webgl-backend.js';
-import { AudioBackend } from '../backends/audio-backend.js';
+import { WebGLBackend } from '../backends/webgl-backend-full.js';
+//import { AudioBackend } from '../backends/audio-backend.js';
 
 export class Runtime {
   constructor(canvas) {
@@ -25,7 +25,7 @@ export class Runtime {
 
     const backends = {
       webgl: new WebGLBackend(this.env, 'webgl', 'visual'),
-      audio: new AudioBackend(this.env, 'audio', 'audio'),
+      //audio: new AudioBackend(this.env, 'audio', 'audio'),
     };
 
     this.coordinator = new Coordinator(ast, this.env);
