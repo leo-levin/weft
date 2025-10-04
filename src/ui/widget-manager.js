@@ -1,6 +1,3 @@
-// Widget Manager - Refined UI controls for WEFT parameters
-// Implements Apple-like aesthetic with smooth animations and popovers
-
 class WidgetManager {
   constructor(env, container) {
     this.env = env;
@@ -35,9 +32,6 @@ class WidgetManager {
   }
 
   updateWidgets() {
-    // For popover system, we don't create widgets upfront
-    // Popovers are created on-demand when hovering over parameter names
-    // The hover detector handles this automatically
   }
 
   createWidget(name, paramStrand) {

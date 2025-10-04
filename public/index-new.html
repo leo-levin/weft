@@ -22,15 +22,14 @@
       <span class="pill" id="perfPill">— ms</span>
       <span class="pill" id="resPill">360×202</span>
     </div>
-    <div id="editorContainer">
-      <div id="syntaxHighlight"></div>
-      <textarea id="editor" spellcheck="false"></textarea>
-    </div>
+    <div id="editorContainer"></div>
     <div id="errors"></div>
   </div>
   <div id="right">
     <div id="canvasTabs">
       <button class="canvas-tab active" data-tab="canvas">Canvas</button>
+      <button class="canvas-tab" data-tab="graph">Graph</button>
+      <button class="canvas-tab" data-tab="instances">Instances</button>
       <button class="canvas-tab" data-tab="ast">AST</button>
       <button class="canvas-tab" data-tab="debug">Debug</button>
     </div>
@@ -42,16 +41,19 @@
           </div>
         </div>
       </div>
+      <div id="graphPane" class="canvas-tab-pane">
+        <div id="graphViewer"></div>
+      </div>
+      <div id="instancesPane" class="canvas-tab-pane">
+        <div id="instanceViewer"></div>
+      </div>
       <div id="astPane" class="canvas-tab-pane">
-        <pre id="astViewer"></pre>
+        <div id="astViewer"></div>
       </div>
       <div id="debugPane" class="canvas-tab-pane">
         <div id="debugContent">
           <div id="debugTabs">
             <button class="debug-tab active" data-tab="logs">Logs</button>
-            <button class="debug-tab" data-tab="graph">Graph</button>
-            <button class="debug-tab" data-tab="scope">Scope</button>
-            <button class="debug-tab" data-tab="instances">Instances</button>
           </div>
           <div id="debugTabContent">
             <div id="logsTab" class="debug-tab-pane active">
@@ -72,15 +74,6 @@
               </div>
               <div id="logOutput"></div>
             </div>
-            <div id="graphTab" class="debug-tab-pane">
-              <div id="graphViewer"></div>
-            </div>
-            <div id="scopeTab" class="debug-tab-pane">
-              <div id="scopeViewer"></div>
-            </div>
-            <div id="instancesTab" class="debug-tab-pane">
-              <div id="instanceViewer"></div>
-            </div>
           </div>
         </div>
       </div>
@@ -89,12 +82,18 @@
 </div>
 
 <script src="https://unpkg.com/ohm-js@17/dist/ohm.min.js"></script>
+<!-- CodeMirror -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script type="module" src="../src/ui/codemirror-weft-mode.js"></script>
 <!-- Load new architecture modules -->
 <script type="module" src="../src/ui/main-new.js"></script>
 <script>
   window.addEventListener('error', function(e) {
     console.error('Global error:', e.error);
-    document.getElementById('errors').innerHTML = '<div style="color: red; padding: 10px; background: rgba(255,0,0,0.1); border-radius: 4px;">Module loading failed: ' + e.error.message + '<br>Check browser console for details.</div>';
+    if (e.error) {
+      document.getElementById('errors').innerHTML = '<div style="color: red; padding: 10px; background: rgba(255,0,0,0.1); border-radius: 4px;">Module loading failed: ' + e.error.message + '<br>Check browser console for details.</div>';
+    }
   });
 </script>
 </body>

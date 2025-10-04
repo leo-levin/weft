@@ -11,9 +11,11 @@ const grammar = ohm.grammar(`
     Program = Statement*
 
     Statement = Definition
+              | EnvAssignment
               | Binding
               | SideEffect
 
+    EnvAssignment = kw<"me"> sym<"<"> ident sym<">"> sym<"="> Expr
     Definition = SpindleDef
     SpindleDef = kw<"spindle"> ident sym<"("> ListOf<ident, ","> sym<")"> sym<"::"> OutputSpec Block
 
@@ -132,6 +134,14 @@ const semantics = grammar.createSemantics()
     },
 
   // ======== STATEMENTS ========
+  EnvAssignment(_me, _lt, field, _gt, _eq, expr) {
+    return {
+      type: 'EnvAssignment',
+      field: field.toAST(),
+      value: expr.toAST()
+    };
+  },
+
   SpindleDef(_kw, name, _lp, params, _rp, _dc, outputs, block) {
     return new SpindleDef(
       name.toAST(),
