@@ -1,5 +1,5 @@
-// WEFT syntax mode for CodeMirror using Ohm-based highlighting
-// Based on convention-over-configuration: Ohm rule names → CSS classes
+// WEFT syntax highlighting for CodeMirror using Ohm.js + doc.markText()
+// Inspired by https://observablehq.com/@ajbouh/editor
 
 const ohm = window.ohm;
 
@@ -44,7 +44,7 @@ const grammar = ohm.grammar(`
     OutputSpec = sym<"<"> ListOf<ident, ","> sym<">">
 
     BundleOrExpr = sym<"<"> ListOf<Expr, ","> sym<">">  -- bundle
-                | Expr                                 -- regular
+                 | Expr                                 -- regular
 
     Expr = IfExpr | LogicalExpr
     IfExpr = kw<"if"> Expr kw<"then"> Expr kw<"else"> Expr
@@ -76,213 +76,372 @@ const grammar = ohm.grammar(`
                 | PrimaryExpr sym<"["> Expr sym<"]">              -- index
                 | ident sym<"@"> ident sym<"("> ListOf<AxisMapping, ","> sym<")"> -- strandRemap
                 | ident sym<"@"> ident                            -- strand
-                | builtinFunc                                     -- builtin
                 | ident sym<"("> ListOf<Expr, ","> sym<")">       -- call
                 | sym<"<"> ListOf<Expr, ","> sym<">">             -- bundle
                 | kw<"mouse"> sym<"@"> ident                      -- mouse
-                | builtinIdent                                    -- builtinIdent
                 | ident                                           -- var
                 | number
                 | string
 
     AxisMapping = Expr sym<"~"> Expr
 
-    builtinFunc = ("sin" | "cos" | "tan" | "abs" | "floor" | "ceil" | "round" | "min" | "max"
-                  | "clamp" | "mix" | "step" | "smoothstep" | "load" | "noise" | "sqrt" | "pow" | "exp" | "log")
-                  sym<"("> ListOf<Expr, ","> sym<")">
-    builtinIdent = ("me" | "mouse") ~identRest
-    instName = ident
-    strandName = ident
-    ident = ~keyword letter identRest*
+    ident = ~keyword letter identRest* space*
     identRest = letter | digit | "_"
-    keyword = ("spindle" | "if" | "then" | "else" | "not" | "and" | "or"
-            | "display" | "render" | "play" | "compute" | "let" | "for" | "in" | "to"
-            | "mouse" | "me" | "sin" | "cos" | "tan" | "abs" | "floor" | "ceil" | "round"
-            | "min" | "max" | "clamp" | "mix" | "step" | "smoothstep" | "load" | "noise"
-            | "sqrt" | "pow" | "exp" | "log") ~identRest
+    keyword = "spindle" | "if" | "then" | "else" | "not" | "and" | "or"
+            | "display" | "render" | "play" | "compute" | "let" | "for" | "in" | "to" | "mouse"
 
-    number = numCore
+    number = numCore space*
     numCore = digit+ "." digit* expPart?    -- d1
             | "." digit+ expPart?           -- d2
             | digit+ expPart?               -- d3
     expPart = ("e" | "E") ("+" | "-")? digit+
 
-    string = "\\"" (~"\\"" any)* "\\""
+    string = "\\"" (~"\\"" any)* "\\"" space*
 
     sym<tok> = tok space*
     kw<word> = word ~identRest space*
 
-    space += lineComment | blockComment
+    space += lineComment | blockComment | pragmaComment
     lineComment = "//" (~"\\n" any)*
     blockComment = "/*" (~"*/" any)* "*/"
+    pragmaComment = "#" pragmaType pragmaBody "\\n"?
+    pragmaType = "slider" | "color" | "xy" | "toggle" | "curve" | "badge"
+    pragmaBody = (~"\\n" any)*
   }
-`);
+  `);
 
-const builtinFuncs = new Set(['sin', 'cos', 'tan', 'abs', 'floor', 'ceil', 'round', 'min', 'max', 'clamp', 'mix', 'step', 'smoothstep', 'load', 'noise', 'sqrt', 'pow', 'exp', 'log']);
-
-(function(mod) {
-  if (typeof exports == "object" && typeof module == "object") // CommonJS
-    mod(require("../../lib/codemirror"));
-  else if (typeof define == "function" && define.amd) // AMD
-    define(["../../lib/codemirror"], mod);
-  else // Plain browser env
-    mod(CodeMirror);
-})(function(CodeMirror) {
-  "use strict";
-
-  CodeMirror.defineMode("weft", function() {
-    let tokenMap = null;
-    let lastSource = null;
-
-    // Regex fallback for when parse fails
-    function buildRegexTokenMap(source) {
-      const lines = source.split('\n');
-      const lineMap = new Map();
-
-      lines.forEach((line, lineNum) => {
-        const tokens = [];
-        const patterns = [
-          { regex: /\/\/.*/, type: 'comment' },
-          { regex: /"(?:[^"\\]|\\.)*"/, type: 'string' },
-          { regex: /\b(spindle|if|then|else|not|and|or|display|render|play|compute|let|for|in|to)\b/, type: 'keyword' },
-          { regex: /\b(me|mouse)\b/, type: 'builtin' },
-          { regex: /\b(sin|cos|tan|abs|floor|ceil|round|min|max|clamp|mix|step|smoothstep|load|noise|sqrt|pow|exp|log)\b/, type: 'builtin' },
-          { regex: /\d+\.?\d*/, type: 'number' },
-          { regex: /@[a-zA-Z_]\w*/, type: 'variable-2' },
-          { regex: /[+\-*/%=<>!~^]/, type: 'operator' },
-          { regex: /[a-zA-Z_]\w*(?=\s*<)/, type: 'def' },
-          { regex: /[a-zA-Z_]\w*/, type: 'variable' },
-        ];
-
-        let idx = 0;
-        while (idx < line.length) {
-          let matched = false;
-          for (const pattern of patterns) {
-            const match = line.slice(idx).match(new RegExp(`^${pattern.regex.source}`));
-            if (match) {
-              tokens.push({ start: idx, end: idx + match[0].length, type: pattern.type });
-              idx += match[0].length;
-              matched = true;
-              break;
-            }
-          }
-          if (!matched) idx++;
-        }
-
-        lineMap.set(lineNum, tokens);
-      });
-
-      return lineMap;
+// Create semantics for collecting tokens
+const semantics = grammar.createSemantics().addOperation('highlight', {
+  _nonterminal(...children) {
+    // Default: collect highlights from all children
+    const result = [];
+    for (const child of children) {
+      const childResult = child.highlight();
+      if (Array.isArray(childResult)) {
+        result.push(...childResult);
+      }
     }
+    return result;
+  },
 
-    function buildTokenMap(source) {
-      try {
-        const match = grammar.match(source);
-        const tokens = [];
+  _iter(...children) {
+    return children.flatMap(c => c.highlight());
+  },
 
-        if (match.succeeded()) {
-          // Walk CST and extract token positions
-          function walk(node) {
-            if (!node) return;
+  _terminal() {
+    // Highlight keyword terminals
+    const text = this.sourceString;
+    const keywords = ['spindle', 'if', 'then', 'else', 'not', 'and', 'or',
+                      'display', 'render', 'play', 'compute', 'let', 'for', 'in', 'to'];
+    if (keywords.includes(text)) {
+      return [{
+        start: this.source.startIdx,
+        end: this.source.endIdx,
+        class: 'cm-keyword'
+      }];
+    }
+    // Highlight 'mouse' as builtin
+    if (text === 'mouse') {
+      return [{
+        start: this.source.startIdx,
+        end: this.source.endIdx,
+        class: 'cm-builtin'
+      }];
+    }
+    return [];
+  },
 
-            const type = getTokenType(node, source);
-            if (type) {
-              tokens.push({
-                start: node.source.startIdx,
-                end: node.source.endIdx,
-                type: type
-              });
-            }
+  // Numbers
+  number(numCore, _space) {
+    return [{
+      start: this.source.startIdx,
+      end: numCore.source.endIdx,
+      class: 'cm-number'
+    }];
+  },
 
-            // Recurse into children
-            if (node.children && node.children.length > 0) {
-              node.children.forEach(child => walk(child));
-            }
-          }
+  // Strings
+  string(_q1, _chars, _q2, _space) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx - _space.sourceString.length,
+      class: 'cm-string'
+    }];
+  },
 
-          walk(match._cst);
-        } else {
-          // Parse failed - use simple regex fallback
-          return buildRegexTokenMap(source);
-        }
+  // Comments
+  lineComment(_start, _body) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx,
+      class: 'cm-comment'
+    }];
+  },
 
-        // Convert to line-based map
-        const lines = source.split('\n');
-        const lineMap = new Map();
+  blockComment(_start, _body, _end) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx,
+      class: 'cm-comment'
+    }];
+  },
 
-        lines.forEach((line, lineNum) => {
-          const lineStart = lines.slice(0, lineNum).reduce((acc, l) => acc + l.length + 1, 0);
-          const lineEnd = lineStart + line.length;
+  pragmaComment(_hash, _type, _body, _newline) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx,
+      class: 'cm-comment'
+    }];
+  },
 
-          const lineTokens = tokens
-            .filter(t => t.start < lineEnd && t.end > lineStart)
-            .map(t => ({
-              start: Math.max(0, t.start - lineStart),
-              end: Math.min(line.length, t.end - lineStart),
-              type: t.type
-            }))
-            .filter(t => t.start < t.end);
+  // Operators - these are the lexical rules
+  AddOp(_op) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx,
+      class: 'cm-operator'
+    }];
+  },
 
-          lineMap.set(lineNum, lineTokens);
+  MulOp(_op) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx,
+      class: 'cm-operator'
+    }];
+  },
+
+  CmpOp(_op) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx,
+      class: 'cm-operator'
+    }];
+  },
+
+  AssignOp(_op) {
+    return [{
+      start: this.source.startIdx,
+      end: this.source.endIdx,
+      class: 'cm-operator'
+    }];
+  },
+
+  // Identifiers - highlight 'me' when used as identifier
+  ident(_letter, _rest, _space) {
+    const text = this.sourceString.trim();
+    if (text === 'me') {
+      return [{
+        start: this.source.startIdx,
+        end: this.source.endIdx - _space.sourceString.length,
+        class: 'cm-builtin'
+      }];
+    }
+    return [];
+  },
+
+  // Instance bindings - highlight the instance name
+  InstanceBinding_direct(name, _sp1, outputs, _sp2, _eq, _sp3, expr) {
+    return [
+      {
+        start: name.source.startIdx,
+        end: name.source.endIdx,
+        class: 'cm-def'
+      },
+      ...name.highlight(),
+      ...outputs.highlight(),
+      ...expr.highlight()
+    ];
+  },
+
+  InstanceBinding_call(func, _lp, args, _rp, _dc, inst, outputs) {
+    return [
+      {
+        start: inst.source.startIdx,
+        end: inst.source.endIdx,
+        class: 'cm-def'
+      },
+      ...func.highlight(),
+      ...args.highlight(),
+      ...outputs.highlight()
+    ];
+  },
+
+  InstanceBinding_strandRemap(base, _at1, strand, _lp, mappings, _rp, _dc, inst, outputs) {
+    return [
+      {
+        start: inst.source.startIdx,
+        end: inst.source.endIdx,
+        class: 'cm-def'
+      },
+      ...base.highlight(),
+      ...strand.highlight(),
+      ...mappings.highlight(),
+      ...outputs.highlight()
+    ];
+  },
+
+  InstanceBinding_multiCall(func, _lt, count, _gt, _lp, args, _rp, _dc, inst, outputs) {
+    return [
+      {
+        start: inst.source.startIdx,
+        end: inst.source.endIdx,
+        class: 'cm-def'
+      },
+      ...func.highlight(),
+      ...count.highlight(),
+      ...args.highlight(),
+      ...outputs.highlight()
+    ];
+  },
+
+  // Output specs - highlight the field names inside < >
+  OutputSpec(_lt, idents, _gt) {
+    const result = [];
+
+    // Highlight < bracket
+    result.push({
+      start: _lt.source.startIdx,
+      end: _lt.source.startIdx + 1,
+      class: 'cm-bracket'
+    });
+
+    // Highlight each identifier in the output spec
+    if (idents.numChildren > 0) {
+      const identNodes = idents.asIteration().children;
+      for (const identNode of identNodes) {
+        result.push({
+          start: identNode.source.startIdx,
+          end: identNode.source.startIdx + identNode.children[0].sourceString.length + identNode.children[1].sourceString.length,
+          class: 'cm-property'
         });
-
-        return lineMap;
-      } catch (e) {
-        console.warn('WEFT highlighting error:', e);
-        return buildRegexTokenMap(source);
       }
     }
 
-    return {
-      startState: function() {
-        return { line: 0 };
+    // Highlight > bracket
+    result.push({
+      start: _gt.source.startIdx,
+      end: _gt.source.startIdx + 1,
+      class: 'cm-bracket'
+    });
+
+    return result;
+  },
+
+  // Strand access expressions
+  PrimaryExpr_strand(base, _at, output) {
+    // Don't double-highlight if base is 'me' (already handled)
+    const baseText = base.sourceString.trim();
+    const result = [...base.highlight()];
+
+    // Highlight instance name
+    if (baseText !== 'me' && baseText !== 'mouse') {
+      result.push({
+        start: base.source.startIdx,
+        end: base.source.endIdx,
+        class: 'cm-variable'
+      });
+    }
+
+    // Highlight @ symbol
+    result.push({
+      start: _at.source.startIdx,
+      end: _at.source.startIdx + 1,
+      class: 'cm-operator'
+    });
+
+    // Highlight strand name after @
+    result.push({
+      start: output.source.startIdx,
+      end: output.source.endIdx - output.children[2].sourceString.length, // exclude trailing space
+      class: 'cm-property'
+    });
+
+    return result;
+  },
+
+  PrimaryExpr_strandRemap(base, _at, strand, _lp, mappings, _rp) {
+    const baseText = base.sourceString.trim();
+    const result = [...base.highlight(), ...mappings.highlight()];
+
+    // Highlight instance name
+    if (baseText !== 'me' && baseText !== 'mouse') {
+      result.push({
+        start: base.source.startIdx,
+        end: base.source.endIdx,
+        class: 'cm-variable'
+      });
+    }
+
+    // Highlight @ symbol
+    result.push({
+      start: _at.source.startIdx,
+      end: _at.source.startIdx + 1,
+      class: 'cm-operator'
+    });
+
+    // Highlight strand name
+    result.push({
+      start: strand.source.startIdx,
+      end: strand.source.endIdx - strand.children[2].sourceString.length, // exclude trailing space
+      class: 'cm-property'
+    });
+
+    return result;
+  },
+
+  PrimaryExpr_mouse(_mouse, _at, field) {
+    return [
+      {
+        start: this.source.startIdx,
+        end: _at.source.startIdx,
+        class: 'cm-builtin'
       },
-
-      token: function(stream, state) {
-        const lineNum = state.line;
-        const col = stream.pos;
-
-        // Rebuild token map when needed
-        if (!tokenMap) {
-          const allLines = [];
-          let line = 0;
-          while (true) {
-            const lineText = stream.lookAhead(line);
-            if (lineText === null || lineText === undefined) break;
-            allLines.push(lineText);
-            line++;
-          }
-          const source = allLines.join('\n');
-          if (source && source !== lastSource) {
-            lastSource = source;
-            tokenMap = buildTokenMap(source);
-          }
-        }
-
-        if (!tokenMap) {
-          stream.next();
-          return null;
-        }
-
-        const tokens = tokenMap.get(lineNum) || [];
-
-        // Find token at current position
-        for (const token of tokens) {
-          if (col >= token.start && col < token.end) {
-            stream.pos = token.end;
-            return token.type;
-          }
-        }
-
-        stream.next();
-        return null;
+      {
+        start: _at.source.startIdx,
+        end: _at.source.startIdx + 1,
+        class: 'cm-operator'
       },
-
-      blankLine: function(state) {
-        state.line++;
+      {
+        start: field.source.startIdx,
+        end: field.source.endIdx - field.children[2].sourceString.length,
+        class: 'cm-property'
       }
-    };
+    ];
+  }
+});
+
+// Export highlighting function
+export function highlightWEFT(editor) {
+  const doc = editor.getDoc();
+  const source = doc.getValue();
+
+  // Clear existing WEFT marks
+  doc.getAllMarks().forEach(mark => {
+    if (mark.className && mark.className.startsWith('cm-')) {
+      mark.clear();
+    }
   });
 
-  CodeMirror.defineMIME("text/x-weft", "weft");
-});
+  try {
+    const match = grammar.match(source);
+    if (!match.succeeded()) {
+      console.warn('WEFT parse failed:', match.message);
+      return;
+    }
+
+    // Collect all tokens to highlight
+    const tokens = semantics(match).highlight();
+
+    // Apply marks
+    tokens.forEach(token => {
+      if (token.end > token.start) {
+        const from = doc.posFromIndex(token.start);
+        const to = doc.posFromIndex(token.end);
+        doc.markText(from, to, { className: token.class });
+      }
+    });
+  } catch (e) {
+    console.error('WEFT highlighting error:', e);
+  }
+}

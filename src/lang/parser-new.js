@@ -10,10 +10,13 @@ const grammar = ohm.grammar(`
   Weft {
     Program = Statement*
 
-    Statement = Definition
+    Statement = Pragma
+              | Definition
               | EnvAssignment
               | Binding
               | SideEffect
+
+    Pragma = "#" pragmaType pragmaBody
 
     EnvAssignment = kw<"me"> sym<"<"> ident sym<">"> sym<"="> Expr
     Definition = SpindleDef
@@ -104,12 +107,12 @@ const grammar = ohm.grammar(`
     sym<tok> = tok space*
     kw<word> = word ~identRest space*
 
-    space += lineComment | blockComment | pragmaComment
+    pragmaType = "slider" | "color" | "xy" | "toggle" | "curve" | "badge"
+    pragmaBody = (~"\\n" any)* "\\n"?
+
+    space += lineComment | blockComment
     lineComment = "//" (~"\\n" any)*
     blockComment = "/*" (~"*/" any)* "*/"
-    pragmaComment = "#" pragmaType pragmaBody "\\n"?
-    pragmaType = "slider" | "color" | "xy" | "toggle" | "curve" | "badge"
-    pragmaBody = (~"\\n" any)*
   }
   `);
 
@@ -130,10 +133,24 @@ const semantics = grammar.createSemantics()
     },
 
     Program(stmts) {
-      return new Program(stmts.toAST());
+      const allStatements = stmts.toAST();
+      const pragmas = allStatements.filter(s => s.type === 'Pragma');
+      const statements = allStatements.filter(s => s.type !== 'Pragma');
+
+      const program = new Program(statements);
+      program.pragmas = pragmas.map(p => this.parsePragmaConfig(p));
+      return program;
     },
 
   // ======== STATEMENTS ========
+  Pragma(_hash, type, body) {
+    return {
+      type: 'Pragma',
+      pragmaType: type.sourceString,
+      body: body.sourceString.trim()
+    };
+  },
+
   EnvAssignment(_me, _lt, field, _gt, _eq, expr) {
     return {
       type: 'EnvAssignment',
@@ -271,8 +288,6 @@ const semantics = grammar.createSemantics()
   },
 
   PrimaryExpr_strandRemap(base, _at, strand, _lp, mappings, _rp) {
-    // mappings is ListOf<AxisMapping, ",">
-    // Each AxisMapping is {expr: sourceExpr, axis: 'x'/'y'/etc}
     return new StrandRemapExpr(
       new VarExpr(base.toAST()),
       strand.toAST(),

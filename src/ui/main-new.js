@@ -1,5 +1,4 @@
-// New architecture maiw
-// file - wires up the Coordinator and new backend system
+// New architecture main file - wires up the Coordinator and new backend system
 import { parse } from '../lang/parser-new.js';
 import { Env } from '../runtime/runtime-new.js';
 import { Coordinator } from '../backends/coordinator.js';
@@ -7,12 +6,12 @@ import { WebGLBackend } from '../backends/webgl-backend-full.js';
 import { clamp } from '../utils/math.js';
 import { logger } from '../utils/logger.js';
 import { match, _ } from '../utils/match.js';
+import { highlightWEFT } from './codemirror-weft-mode.js';
 
 console.log('✅ Starting WEFT application (NEW ARCHITECTURE)...');
 
 // Enable debug logging
-logger.setFilters({ debug: true, info: true, warn: true, error: true });
-console.log('🔧 Debug logging enabled');
+logger.setFilters({ debug: false, info: false, warn: false, error: true });
 
 // DOM elements
 const errorsEl = document.getElementById('errors');
@@ -67,56 +66,54 @@ function updateASTViewer(ast) {
   if (!astViewer) return;
 
   try {
-    // Create SVG graph
-    const nodes = [];
-    const edges = [];
+    // Simplify AST for display
+    const simplified = {
+      statements: ast.statements.map(stmt => simplifyNode(stmt))
+    };
 
-    ast.statements.forEach((stmt, i) => {
-      const node = {
-        id: `stmt_${i}`,
-        label: '',
-        type: stmt.type,
-        outputs: [],
-        expr: null
-      };
-
-      if (stmt.type === 'EnvAssignment') {
-        node.label = `me<${stmt.field}>`;
-        node.expr = formatExpr(stmt.value);
-      } else if (stmt.type === 'InstanceBinding') {
-        node.label = stmt.name;
-        node.outputs = stmt.outputs;
-        node.expr = formatExpr(stmt.expr);
-
-        // Extract dependencies from expression
-        extractDependencies(stmt.expr).forEach(dep => {
-          edges.push({ from: dep, to: node.id });
-        });
-      } else if (stmt.type === 'DisplayStmt' || stmt.type === 'RenderStmt') {
-        node.label = stmt.type.replace('Stmt', '');
-        node.expr = stmt.args.map(a => formatExpr(a)).join(', ');
-
-        // Extract dependencies
-        stmt.args.forEach(arg => {
-          extractDependencies(arg).forEach(dep => {
-            edges.push({ from: dep, to: node.id });
-          });
-        });
-      } else if (stmt.type === 'SpindleDef') {
-        node.label = `spindle ${stmt.name}`;
-        node.outputs = stmt.outputs;
-      }
-
-      nodes.push(node);
-    });
-
-    astViewer.innerHTML = renderNodeGraph(nodes, edges, 'AST');
+    astViewer.innerHTML = `<pre style="font-family: monospace; font-size: 11px; line-height: 1.5; padding: 15px; margin: 0; color: #d4d4d4;">${JSON.stringify(simplified, null, 2)}</pre>`;
   } catch (error) {
     astViewer.textContent = `Error displaying AST: ${error.message}`;
   }
 }
 
-// Extract dependency names from expressions
+function simplifyNode(node) {
+  if (!node || typeof node !== 'object') return node;
+
+  if (Array.isArray(node)) {
+    return node.map(n => simplifyNode(n));
+  }
+
+  const simplified = { type: node.type };
+
+  // Add relevant fields based on node type
+  if (node.name) simplified.name = node.name;
+  if (node.field) simplified.field = node.field;
+  if (node.params) simplified.params = node.params;
+  if (node.outputs) simplified.outputs = node.outputs;
+  if (node.args) simplified.args = node.args.map(a => simplifyNode(a));
+  if (node.expr) simplified.expr = simplifyNode(node.expr);
+  if (node.value) simplified.value = simplifyNode(node.value);
+  if (node.v !== undefined) simplified.v = node.v;
+  if (node.op) simplified.op = node.op;
+  if (node.left) simplified.left = simplifyNode(node.left);
+  if (node.right) simplified.right = simplifyNode(node.right);
+  if (node.arg) simplified.arg = simplifyNode(node.arg);
+  if (node.func) simplified.func = node.func;
+  if (node.base) simplified.base = simplifyNode(node.base);
+  if (node.strand) simplified.strand = node.strand;
+  if (node.output) simplified.output = node.output;
+  if (node.cond) simplified.cond = simplifyNode(node.cond);
+  if (node.then) simplified.then = simplifyNode(node.then);
+  if (node.else) simplified.else = simplifyNode(node.else);
+  if (node.mappings) simplified.mappings = node.mappings.map(m => simplifyNode(m));
+  if (node.source) simplified.source = simplifyNode(node.source);
+  if (node.target) simplified.target = simplifyNode(node.target);
+  if (node.body) simplified.body = simplifyNode(node.body);
+
+  return simplified;
+}
+
 function extractDependencies(expr) {
   const deps = [];
   if (!expr) return deps;
@@ -151,7 +148,7 @@ function extractDependencies(expr) {
   return [...new Set(deps)];
 }
 
-// Render a visual node graph with SVG - layered layout
+
 function renderNodeGraph(nodes, edges, title) {
   if (nodes.length === 0) {
     return `<div style="padding: 20px; color: #666;">No nodes to display</div>`;
@@ -164,7 +161,6 @@ function renderNodeGraph(nodes, edges, title) {
   const leftMargin = 40;
   const topMargin = 70;
 
-  // Build adjacency lists
   const outgoing = new Map();
   const incoming = new Map();
 
@@ -180,11 +176,9 @@ function renderNodeGraph(nodes, edges, title) {
     }
   });
 
-  // Assign layers using topological sort
   const layers = [];
   const nodeLayer = new Map();
 
-  // Find nodes with no dependencies (layer 0)
   const roots = nodes.filter(n => incoming.get(n.id).length === 0);
 
   if (roots.length > 0) {
@@ -192,7 +186,6 @@ function renderNodeGraph(nodes, edges, title) {
     roots.forEach(n => nodeLayer.set(n.id, 0));
   }
 
-  // BFS to assign layers
   let currentLayer = 0;
   while (layers[currentLayer]) {
     const nextLayer = new Set();
@@ -218,7 +211,6 @@ function renderNodeGraph(nodes, edges, title) {
     }
   }
 
-  // Handle any remaining nodes
   nodes.forEach(n => {
     if (!nodeLayer.has(n.id)) {
       nodeLayer.set(n.id, layers.length);
@@ -229,7 +221,6 @@ function renderNodeGraph(nodes, edges, title) {
     }
   });
 
-  // Position nodes with vertical centering per layer
   const nodePositions = new Map();
   const maxNodesInLayer = Math.max(...layers.map(l => l.length));
 
@@ -250,7 +241,6 @@ function renderNodeGraph(nodes, edges, title) {
 
   let svg = `<svg width="100%" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" style="font-family: monospace; font-size: 12px; background: rgba(0,0,0,0.2); border-radius: 8px;">`;
 
-  // Gradient definitions
   svg += `<defs>
     <linearGradient id="edgeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" style="stop-color:#4ec9b0;stop-opacity:0.3" />
@@ -366,32 +356,26 @@ function formatExpr(expr) {
   );
 }
 
-// Update graph viewer with visual graph
+// Update graph viewer - show raw graph structure
 function updateGraphViewer() {
   const graphViewer = document.getElementById('graphViewer');
   if (!graphViewer || !coordinator || !coordinator.graph) return;
 
   try {
-    const nodes = [];
-    const edges = [];
+    const graphData = {
+      execOrder: coordinator.graph.execOrder,
+      nodes: {}
+    };
 
-    // Convert render graph to visual nodes
     for (const [name, node] of coordinator.graph.nodes) {
-      nodes.push({
-        id: name,
-        label: name,
-        type: 'Instance',
+      graphData.nodes[name] = {
         outputs: Array.from(node.outputs.keys()),
+        deps: Array.from(node.deps),
         contexts: Array.from(node.contexts)
-      });
-
-      // Add edges for dependencies
-      for (const dep of node.deps) {
-        edges.push({ from: dep, to: name });
-      }
+      };
     }
 
-    graphViewer.innerHTML = renderNodeGraph(nodes, edges, 'Render Graph');
+    graphViewer.innerHTML = `<pre style="font-family: monospace; font-size: 11px; line-height: 1.4; padding: 15px; margin: 0; color: #d4d4d4;">${JSON.stringify(graphData, null, 2)}</pre>`;
   } catch (error) {
     graphViewer.textContent = `Error displaying graph: ${error.message}`;
   }
@@ -504,6 +488,9 @@ let debounceTimer = null;
 function setupEditorListeners() {
   editor.on('change', () => {
     localStorage.setItem('weft_code', editor.getValue());
+
+    // Apply syntax highlighting
+    highlightWEFT(editor);
 
     if (!env.autorun) return;
 
@@ -732,6 +719,9 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       editor.setValue(defaultCode().trim());
     }
+
+    // Apply initial syntax highlighting
+    highlightWEFT(editor);
 
     // Setup editor event listeners
     setupEditorListeners();

@@ -79,7 +79,7 @@ export class WebGLBackend extends BaseBackend {
       return;
     }
 
-    this.updateCanvasSize();
+    this.updateVideoTextures();
     this.updateUniforms();
     this.drawFrame();
   }
@@ -93,10 +93,15 @@ export class WebGLBackend extends BaseBackend {
       this.gl.deleteBuffer(this.vertexBuffer);
       this.vertexBuffer = null;
     }
-    // Cleanup textures
+    // Cleanup textures and videos
     for (const [, textureInfo] of this.textures) {
       if (textureInfo.texture) {
         this.gl.deleteTexture(textureInfo.texture);
+      }
+      if (textureInfo.isVideo && textureInfo.videoElement) {
+        textureInfo.videoElement.pause();
+        textureInfo.videoElement.src = '';
+        textureInfo.videoElement.load();
       }
     }
     this.textures.clear();
@@ -236,17 +241,22 @@ export class WebGLBackend extends BaseBackend {
     }
   }
 
-  updateCanvasSize() {
-    const width = this.env.resW;
-    const height = this.env.resH;
 
-    if (this.canvas.width !== width || this.canvas.height !== height) {
-      this.canvas.width = width;
-      this.canvas.height = height;
-      this.log(`Canvas resized to: ${width}×${height}`);
+  updateVideoTextures() {
+    const gl = this.gl;
+
+    for (const [, textureInfo] of this.textures) {
+      if (textureInfo.isVideo && textureInfo.videoElement) {
+        const video = textureInfo.videoElement;
+
+        // Only update if video has new frame data
+        if (video.readyState >= video.HAVE_CURRENT_DATA) {
+          gl.activeTexture(gl.TEXTURE0 + textureInfo.unit);
+          gl.bindTexture(gl.TEXTURE_2D, textureInfo.texture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+        }
+      }
     }
-
-    this.gl.viewport(0, 0, width, height);
   }
 
   updateUniforms() {
@@ -337,11 +347,11 @@ export class WebGLBackend extends BaseBackend {
       if (graph && graph.execOrder && graph.execOrder.length > 0) {
         // Process in execution order from the graph
         for (const instanceName of graph.execOrder) {
-          // Find the statement that defines this instance
-          const stmt = program.statements.find(s =>
+          // Find ALL statements that define this instance (could be multiple outputs)
+          const stmts = program.statements.filter(s =>
             s.type === 'InstanceBinding' && s.name === instanceName
           );
-          if (stmt) {
+          for (const stmt of stmts) {
             this.processStatement(stmt, glslCode, instanceOutputs, globalScope);
           }
         }
@@ -1308,6 +1318,13 @@ ${glslCode.join('\n')}
       return null;
     }
 
+    const lower = url.toLowerCase();
+    const isVideo = lower.endsWith('.mp4') || lower.endsWith('.webm') || lower.endsWith('.ogg') || lower.endsWith('.mov');
+
+    if (isVideo) {
+      return this.loadVideoTexture(url, instName);
+    }
+
     const gl = this.gl;
     const texture = gl.createTexture();
     const textureUnit = this.textureCounter++;
@@ -1341,6 +1358,64 @@ ${glslCode.join('\n')}
       unit: textureUnit,
       uniformName: `u_texture${textureUnit}`,
       loaded: false
+    };
+
+    this.textures.set(instName, textureInfo);
+    return textureInfo;
+  }
+
+  loadVideoTexture(url, instName) {
+    const gl = this.gl;
+    const texture = gl.createTexture();
+    const textureUnit = this.textureCounter++;
+
+    gl.activeTexture(gl.TEXTURE0 + textureUnit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+
+    // Placeholder while loading
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([128, 128, 128, 255]));
+
+    const video = document.createElement('video');
+    video.crossOrigin = 'anonymous';
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.preload = 'auto';
+
+    video.addEventListener('loadeddata', () => {
+      gl.activeTexture(gl.TEXTURE0 + textureUnit);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      this.log(`Video loaded: ${url}`);
+      video.play().catch(() => {});
+    });
+
+    video.addEventListener('error', (e) => {
+      this.error(`Failed to load video: ${url}`, e);
+    });
+
+    video.src = url;
+
+    // Try to play on user interaction if autoplay blocked
+    const playOnInteraction = () => {
+      if (video.paused) {
+        video.play().catch(() => {});
+      }
+    };
+    document.addEventListener('click', playOnInteraction, { once: true });
+
+    const textureInfo = {
+      texture,
+      unit: textureUnit,
+      uniformName: `u_texture${textureUnit}`,
+      loaded: false,
+      isVideo: true,
+      videoElement: video
     };
 
     this.textures.set(instName, textureInfo);
