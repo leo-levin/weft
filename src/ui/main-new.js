@@ -64,37 +64,285 @@ function initializeBackends() {
 // Update AST viewer with clean display
 function updateASTViewer(ast) {
   const astViewer = document.getElementById('astViewer');
-  if (astViewer) {
-    try {
-      let html = '<div style="font-family: monospace; line-height: 1.6;">';
+  if (!astViewer) return;
 
-      for (const stmt of ast.statements) {
-        html += '<div style="margin: 10px 0; padding: 8px; background: rgba(255,255,255,0.03); border-left: 3px solid #4ec9b0; border-radius: 2px;">';
+  try {
+    // Create SVG graph
+    const nodes = [];
+    const edges = [];
 
-        if (stmt.type === 'EnvAssignment') {
-          html += `<div style="color: #569cd6; font-weight: bold;">me&lt;${stmt.field}&gt; = ${formatExpr(stmt.value)}</div>`;
-        } else if (stmt.type === 'InstanceBinding') {
-          html += `<div style="color: #4ec9b0; font-weight: bold;">${stmt.name}</div>`;
-          html += `<div style="margin-left: 15px; color: #9cdcfe;">outputs: ${stmt.outputs.join(', ')}</div>`;
-          html += `<div style="margin-left: 15px; color: #ce9178;">expr: ${formatExpr(stmt.expr)}</div>`;
-        } else if (stmt.type === 'DisplayStmt' || stmt.type === 'RenderStmt') {
-          html += `<div style="color: #c586c0; font-weight: bold;">${stmt.type}</div>`;
-          html += `<div style="margin-left: 15px;">args: ${stmt.args.map(a => formatExpr(a)).join(', ')}</div>`;
-        } else if (stmt.type === 'SpindleDef') {
-          html += `<div style="color: #dcdcaa; font-weight: bold;">spindle ${stmt.name}</div>`;
-          html += `<div style="margin-left: 15px;">params: ${stmt.params.join(', ')}</div>`;
-          html += `<div style="margin-left: 15px;">outputs: ${stmt.outputs.join(', ')}</div>`;
-        }
+    ast.statements.forEach((stmt, i) => {
+      const node = {
+        id: `stmt_${i}`,
+        label: '',
+        type: stmt.type,
+        outputs: [],
+        expr: null
+      };
 
-        html += '</div>';
+      if (stmt.type === 'EnvAssignment') {
+        node.label = `me<${stmt.field}>`;
+        node.expr = formatExpr(stmt.value);
+      } else if (stmt.type === 'InstanceBinding') {
+        node.label = stmt.name;
+        node.outputs = stmt.outputs;
+        node.expr = formatExpr(stmt.expr);
+
+        // Extract dependencies from expression
+        extractDependencies(stmt.expr).forEach(dep => {
+          edges.push({ from: dep, to: node.id });
+        });
+      } else if (stmt.type === 'DisplayStmt' || stmt.type === 'RenderStmt') {
+        node.label = stmt.type.replace('Stmt', '');
+        node.expr = stmt.args.map(a => formatExpr(a)).join(', ');
+
+        // Extract dependencies
+        stmt.args.forEach(arg => {
+          extractDependencies(arg).forEach(dep => {
+            edges.push({ from: dep, to: node.id });
+          });
+        });
+      } else if (stmt.type === 'SpindleDef') {
+        node.label = `spindle ${stmt.name}`;
+        node.outputs = stmt.outputs;
       }
 
-      html += '</div>';
-      astViewer.innerHTML = html;
-    } catch (error) {
-      astViewer.textContent = `Error displaying AST: ${error.message}`;
+      nodes.push(node);
+    });
+
+    astViewer.innerHTML = renderNodeGraph(nodes, edges, 'AST');
+  } catch (error) {
+    astViewer.textContent = `Error displaying AST: ${error.message}`;
+  }
+}
+
+// Extract dependency names from expressions
+function extractDependencies(expr) {
+  const deps = [];
+  if (!expr) return deps;
+
+  match(expr.type,
+    'Var', () => deps.push(expr.name),
+    'StrandAccess', () => {
+      if (expr.base && expr.base.type === 'Var') {
+        deps.push(expr.base.name);
+      }
+    },
+    'Call', () => {
+      if (expr.args) {
+        expr.args.forEach(arg => deps.push(...extractDependencies(arg)));
+      }
+    },
+    'Binary', () => {
+      deps.push(...extractDependencies(expr.left));
+      deps.push(...extractDependencies(expr.right));
+    },
+    'Unary', () => {
+      deps.push(...extractDependencies(expr.arg));
+    },
+    'StrandRemap', () => {
+      if (expr.base && expr.base.type === 'Var') {
+        deps.push(expr.base.name);
+      }
+    },
+    _, (n) => {}
+  );
+
+  return [...new Set(deps)];
+}
+
+// Render a visual node graph with SVG - layered layout
+function renderNodeGraph(nodes, edges, title) {
+  if (nodes.length === 0) {
+    return `<div style="padding: 20px; color: #666;">No nodes to display</div>`;
+  }
+
+  const nodeWidth = 160;
+  const nodeHeight = 70;
+  const layerSpacingX = 220;
+  const nodeSpacingY = 90;
+  const leftMargin = 40;
+  const topMargin = 70;
+
+  // Build adjacency lists
+  const outgoing = new Map();
+  const incoming = new Map();
+
+  nodes.forEach(n => {
+    outgoing.set(n.id, []);
+    incoming.set(n.id, []);
+  });
+
+  edges.forEach(edge => {
+    if (outgoing.has(edge.from) && incoming.has(edge.to)) {
+      outgoing.get(edge.from).push(edge.to);
+      incoming.get(edge.to).push(edge.from);
+    }
+  });
+
+  // Assign layers using topological sort
+  const layers = [];
+  const nodeLayer = new Map();
+
+  // Find nodes with no dependencies (layer 0)
+  const roots = nodes.filter(n => incoming.get(n.id).length === 0);
+
+  if (roots.length > 0) {
+    layers.push(roots.map(n => n.id));
+    roots.forEach(n => nodeLayer.set(n.id, 0));
+  }
+
+  // BFS to assign layers
+  let currentLayer = 0;
+  while (layers[currentLayer]) {
+    const nextLayer = new Set();
+
+    layers[currentLayer].forEach(nodeId => {
+      outgoing.get(nodeId).forEach(childId => {
+        const deps = incoming.get(childId);
+        if (deps.every(dep => nodeLayer.has(dep))) {
+          const maxDepLayer = Math.max(...deps.map(dep => nodeLayer.get(dep)));
+          if (!nodeLayer.has(childId) || nodeLayer.get(childId) < maxDepLayer + 1) {
+            nodeLayer.set(childId, maxDepLayer + 1);
+            nextLayer.add(childId);
+          }
+        }
+      });
+    });
+
+    if (nextLayer.size > 0) {
+      layers.push([...nextLayer]);
+      currentLayer++;
+    } else {
+      break;
     }
   }
+
+  // Handle any remaining nodes
+  nodes.forEach(n => {
+    if (!nodeLayer.has(n.id)) {
+      nodeLayer.set(n.id, layers.length);
+      if (!layers[layers.length]) {
+        layers[layers.length] = [];
+      }
+      layers[layers.length - 1].push(n.id);
+    }
+  });
+
+  // Position nodes with vertical centering per layer
+  const nodePositions = new Map();
+  const maxNodesInLayer = Math.max(...layers.map(l => l.length));
+
+  layers.forEach((layer, layerIdx) => {
+    const layerHeight = layer.length * nodeSpacingY;
+    const startY = topMargin + (maxNodesInLayer * nodeSpacingY - layerHeight) / 2;
+
+    layer.forEach((nodeId, nodeIdx) => {
+      nodePositions.set(nodeId, {
+        x: leftMargin + layerIdx * layerSpacingX,
+        y: startY + nodeIdx * nodeSpacingY
+      });
+    });
+  });
+
+  const svgWidth = Math.max(600, leftMargin + layers.length * layerSpacingX + nodeWidth + 40);
+  const svgHeight = topMargin + maxNodesInLayer * nodeSpacingY + 40;
+
+  let svg = `<svg width="100%" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}" style="font-family: monospace; font-size: 12px; background: rgba(0,0,0,0.2); border-radius: 8px;">`;
+
+  // Gradient definitions
+  svg += `<defs>
+    <linearGradient id="edgeGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4ec9b0;stop-opacity:0.3" />
+      <stop offset="100%" style="stop-color:#4ec9b0;stop-opacity:0.6" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>`;
+
+  // Title
+  svg += `<text x="20" y="35" fill="#9cdcfe" font-size="16" font-weight="bold">${title}</text>`;
+  svg += `<line x1="20" y1="42" x2="${20 + title.length * 9}" y2="42" stroke="#9cdcfe" stroke-width="2" opacity="0.3"/>`;
+
+  // Draw edges
+  edges.forEach(edge => {
+    const fromPos = nodePositions.get(edge.from);
+    const toPos = nodePositions.get(edge.to);
+
+    if (fromPos && toPos) {
+      const fromX = fromPos.x + nodeWidth;
+      const fromY = fromPos.y + nodeHeight / 2;
+      const toX = toPos.x;
+      const toY = toPos.y + nodeHeight / 2;
+
+      const dx = toX - fromX;
+      const controlX1 = fromX + dx * 0.6;
+      const controlX2 = toX - dx * 0.4;
+
+      svg += `<path d="M ${fromX} ${fromY} C ${controlX1} ${fromY}, ${controlX2} ${toY}, ${toX - 5} ${toY}"
+              stroke="url(#edgeGradient)" stroke-width="2.5" fill="none"/>`;
+
+      svg += `<path d="M ${toX} ${toY} l -10 -5 l 0 10 z" fill="#4ec9b0" opacity="0.7"/>`;
+    }
+  });
+
+  // Draw nodes
+  nodes.forEach(node => {
+    const pos = nodePositions.get(node.id);
+    if (!pos) return;
+
+    const color = match(node.type,
+      'InstanceBinding', () => '#4ec9b0',
+      'Instance', () => '#4ec9b0',
+      'DisplayStmt', () => '#c586c0',
+      'RenderStmt', () => '#c586c0',
+      'EnvAssignment', () => '#569cd6',
+      'SpindleDef', () => '#dcdcaa',
+      _, () => '#888'
+    );
+
+    // Shadow
+    svg += `<rect x="${pos.x + 2}" y="${pos.y + 2}" width="${nodeWidth}" height="${nodeHeight}"
+            fill="rgba(0,0,0,0.3)" rx="8"/>`;
+
+    // Node box with gradient
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="${nodeWidth}" height="${nodeHeight}"
+            fill="rgba(20,20,20,0.95)" stroke="${color}" stroke-width="2.5" rx="8"
+            filter="url(#glow)"/>`;
+
+    // Accent bar
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="4" height="${nodeHeight}"
+            fill="${color}" rx="8 0 0 8" opacity="0.8"/>`;
+
+    // Node label
+    const labelText = node.label.length > 18 ? node.label.substring(0, 15) + '...' : node.label;
+    svg += `<text x="${pos.x + 12}" y="${pos.y + 24}" fill="${color}" font-weight="bold" font-size="13">${labelText}</text>`;
+
+    // Outputs
+    if (node.outputs && node.outputs.length > 0) {
+      const outputText = node.outputs.join(', ');
+      const displayText = outputText.length > 18 ? outputText.substring(0, 15) + '...' : outputText;
+      svg += `<text x="${pos.x + 12}" y="${pos.y + 43}" fill="#9cdcfe" font-size="10">▸ ${displayText}</text>`;
+    }
+
+    // Expression or contexts
+    if (node.expr) {
+      const exprText = node.expr.length > 20 ? node.expr.substring(0, 17) + '...' : node.expr;
+      svg += `<text x="${pos.x + 12}" y="${pos.y + 60}" fill="#ce9178" font-size="9" opacity="0.8">${exprText}</text>`;
+    } else if (node.contexts && node.contexts.length > 0) {
+      const ctxText = node.contexts.join(', ');
+      const displayCtx = ctxText.length > 18 ? ctxText.substring(0, 15) + '...' : ctxText;
+      svg += `<text x="${pos.x + 12}" y="${pos.y + 60}" fill="#dcdcaa" font-size="9" opacity="0.8">ctx: ${displayCtx}</text>`;
+    }
+  });
+
+  svg += `</svg>`;
+  return svg;
 }
 
 // Format expression for AST display
@@ -118,36 +366,32 @@ function formatExpr(expr) {
   );
 }
 
-// Update graph viewer - consistent with AST style
+// Update graph viewer with visual graph
 function updateGraphViewer() {
   const graphViewer = document.getElementById('graphViewer');
   if (!graphViewer || !coordinator || !coordinator.graph) return;
 
   try {
-    let html = '<div style="font-family: monospace; line-height: 1.6;">';
+    const nodes = [];
+    const edges = [];
 
-    // Execution order
-    html += '<div style="margin: 10px 0; padding: 8px; background: rgba(255,255,255,0.03); border-left: 3px solid #569cd6; border-radius: 2px;">';
-    html += '<div style="color: #569cd6; font-weight: bold;">Execution Order</div>';
-    html += `<div style="margin-left: 15px; margin-top: 4px;">${coordinator.graph.execOrder.join(' → ')}</div>`;
-    html += '</div>';
-
-    // Nodes
+    // Convert render graph to visual nodes
     for (const [name, node] of coordinator.graph.nodes) {
-      html += '<div style="margin: 10px 0; padding: 8px; background: rgba(255,255,255,0.03); border-left: 3px solid #4ec9b0; border-radius: 2px;">';
-      html += `<div style="color: #4ec9b0; font-weight: bold;">${name}</div>`;
-      html += `<div style="margin-left: 15px; color: #9cdcfe;">outputs: ${Array.from(node.outputs.keys()).join(', ')}</div>`;
-      if (node.deps.size > 0) {
-        html += `<div style="margin-left: 15px; color: #ce9178;">depends: ${Array.from(node.deps).join(', ')}</div>`;
+      nodes.push({
+        id: name,
+        label: name,
+        type: 'Instance',
+        outputs: Array.from(node.outputs.keys()),
+        contexts: Array.from(node.contexts)
+      });
+
+      // Add edges for dependencies
+      for (const dep of node.deps) {
+        edges.push({ from: dep, to: name });
       }
-      if (node.contexts.size > 0) {
-        html += `<div style="margin-left: 15px; color: #dcdcaa;">contexts: ${Array.from(node.contexts).join(', ')}</div>`;
-      }
-      html += '</div>';
     }
 
-    html += '</div>';
-    graphViewer.innerHTML = html;
+    graphViewer.innerHTML = renderNodeGraph(nodes, edges, 'Render Graph');
   } catch (error) {
     graphViewer.textContent = `Error displaying graph: ${error.message}`;
   }
@@ -328,7 +572,7 @@ async function runCode() {
         // Evaluate the expression to get the value
         const value = match(stmt.value.type,
           'Num', () => stmt.value.v,
-          _, () => {
+          _, (n) => {
             console.warn(`EnvAssignment: cannot evaluate ${stmt.value.type} at parse time`);
             return null;
           }
@@ -346,7 +590,7 @@ async function runCode() {
             'bpm', () => { env.bpm = value; },
             'timesig_num', () => { env.timesig_num = value; },
             'timesig_denom', () => { env.timesig_denom = value; },
-            _, () => console.warn(`Unknown env field: ${field}`)
+            _, (n) => console.warn(`Unknown env field: ${field}`)
           );
         }
       }
