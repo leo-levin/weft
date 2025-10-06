@@ -12,7 +12,7 @@ import {
   StrandAccessExpr,
   StrandRemapExpr,
   IfExpr
-} from '../ast/ast-node.js'
+} from './ast-node.js'
 
 function compileToJS(node, env) {
   if (Array.isArray(node)) {
