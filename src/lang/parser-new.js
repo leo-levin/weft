@@ -2,7 +2,7 @@ import { ASTNode, BinaryExpr, UnaryExpr, CallExpr, VarExpr, NumExpr, StrExpr,
   MeExpr, MouseExpr, TupleExpr, IndexExpr, StrandAccessExpr, StrandRemapExpr, IfExpr,
   LetBinding, Assignment, NamedArg, DisplayStmt, RenderStmt, PlayStmt, ComputeStmt,
   SpindleDef, InstanceBinding, Program
-} from '../ast/ast-node.js';
+} from './ast-node.js';
 
 const ohm = window.ohm;
 
