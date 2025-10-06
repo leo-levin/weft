@@ -1,50 +1,71 @@
 # WEFT
 
-**WEFT** is a domain-specific programming language and interactive playground for creating visual graphics, animations, and audiovisual experiences. It features a web-based IDE with real-time compilation and visualization, supporting both CPU and GPU-accelerated rendering through WebGL.
+A creative programming language for working with images, video, audio, and data.
 
-WEFT is designed around a unique data-flow paradigm where programs describe transformations on pixel coordinates and media streams using **spindles** (computational units) and **strands** (data connections).
+## 🪐 What is WEFT?
+WEFT is built on a simple insight: **all media is just functions over coordinate spaces**.
 
-## Features
+🖼️ Images are `(x, y) → color`
+🎥 Video is `(x, y, time) → color`
+🔊 Audio is `(time) → amplitude`
+📊 Data is `(any_coordinates) → value`
 
-- 🎨 **Real-time visual programming** with instant feedback
-- ⚡ **GPU-accelerated rendering** via automatic GLSL compilation
-- 🖼️ **Image and video processing** with built-in media loading
-- 🎵 **Audio synthesis** with `play()` statements
-- 🖱️ **Interactive elements** with mouse tracking and UI widgets
-- 📐 **Mathematical expressions** with standard library of functions
+Since everything reduces to coordinate mappings, the same mathematical patterns work everywhere. WEFT doesn't care if its coordinates represent pixels, audio samples, or data points — it transforms mathematical relationships. This abstraction lets you write creative techniques once and apply them to video, audio, visualization, and control without rewriting code.
 
-## Getting Started
+## 🧵 Core Concepts
 
-### Running Locally
+### Strands
 
-WEFT runs entirely in the browser with no build step required:
+Everything in WEFT is a **strand**—a scalar function that maps coordinates to real numbers (ℝ).
 
-```bash
-# Serve the project locally
-python3 -m http.server 8000
-# or
-npx http-server .
-```
+Strands can be:
+- **Domain coordinates**: `me@x`, `me@y`, `me@time`
+- **Constants**: `4`, `0.1`, `100` (treated as constant-valued strands)
+- **Expressions**: `sin(me@time * 2)`, `mouse@x + 10`
+- **Instance outputs**: `img@r`, `audio@intensity`
 
-Then open `http://localhost:8000/public/index.html` in your browser.
+There are no artificial distinctions between types of inputs. A constant `4` and a time-varying expression `sin(me@time)` are both strands — one happens to be constant, the other varies.
 
-### Your First WEFT Program
+### Spindles
+
+**Spindles** are templates that programmatically generate strands. They're reusable functions that take parameters and output named strands.
 
 ```weft
-// Set canvas size
-me<width> = 800
-me<height> = 600
-
-// Create a gradient based on pixel position
-gradient<r> = me@x / me@width
-gradient<g> = me@y / me@height
-gradient<b> = 0.5
-
-// Display the result
-display(gradient)
+spindle ripple(x, y, cx, cy, freq) :: <wave> {
+  let dx = x - cx
+  let dy = y - cy
+  let dist = sqrt(dx*dx + dy*dy)
+  wave = sin(dist * freq)
+}
 ```
+Spindles abstract patterns. The same ripple spindle works on spatial coordinates, color coordinates, or any other domain—it's just math over numbers.
 
-This creates a simple gradient where red increases left-to-right and green increases top-to-bottom.
+### Instances
+When you call a spindle or create an expression with outputs, you generate an **instance**—a named bundle of strands. Instances organize related strands under a namespace.
+
+```weft
+// Load creates an instance 'img' with strands r, g, b
+load("photo.jpg")::img<r, g, b>
+
+// Access strands from the instance
+red_channel = img@r(me@x, me@y)
+```
+Instances are just organizational containers. The real computational units are the strands inside them.
+
+### Coordinate Transformation
+Most transformation occurs in domain space. Changing where a function is evaluated, not what the function is. We call this warping:
+
+```weft
+// Shift the left by 0.1
+shifted<r> = img@r(me@x ~ me@x + 0.1, me@y ~ me@y)
+
+// Animate the shift over time
+animated<r> = img@r(me@x ~ me@x + sin(me@time * 2), me@y ~ me@y)
+
+// React to audio
+reactive<r> = img@r(me@x ~ me@x + audio@intensity * 0.5, me@y)
+```
+This is the core of WEFT's expressive power: **you don't process samples, you warp the coordinate space itself**.
 
 ## Language Basics
 
@@ -55,7 +76,7 @@ The `me` object provides access to canvas properties and per-pixel state:
 ```weft
 me<width> = 1000          // Set canvas width
 me<height> = 1000         // Set canvas height
-me<loop> = 60             // Set FPS
+me<fps> = 60             // Set FPS
 
 me@x                      // Current pixel x-coordinate (0-1 normalized)
 me@y                      // Current pixel y-coordinate (0-1 normalized)
