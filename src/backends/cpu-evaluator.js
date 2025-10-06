@@ -1,4 +1,4 @@
-import {compile} from '../compilers/compiler-new.js'
+import {compile} from '../lang/compiler-new.js'
 
 export class CPUEvaluator {
   constructor(env, graph){
