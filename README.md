@@ -67,110 +67,198 @@ reactive<r> = img@r(me@x ~ me@x + audio@intensity * 0.5, me@y)
 ```
 This is the core of WEFT's expressive power: **you don't process samples, you warp the coordinate space itself**.
 
-## Language Basics
+## Getting Started
 
-### Environment Variables (`me`)
+WEFT runs entirely in the browser with no build step required.
 
-The `me` object provides access to canvas properties and per-pixel state:
+### Running Locally
 
-```weft
-me<width> = 1000          // Set canvas width
-me<height> = 1000         // Set canvas height
-me<fps> = 60             // Set FPS
-
-me@x                      // Current pixel x-coordinate (0-1 normalized)
-me@y                      // Current pixel y-coordinate (0-1 normalized)
-me@time                   // Current time in seconds
+```bash
+# Serve the project
+python3 -m http.server 8000
+# or
+npx http-server .
 ```
 
-### Spindles: Computational Units
+Then open `http://localhost:8000/public/index.html` in your browser.
 
-Spindles are the core abstraction in WEFT. They define reusable computations with named inputs and outputs:
+### Your First Program
 
 ```weft
-spindle circle(x, y, cx, cy, r) :: <result> {
+me<width> = 800
+me<height> = 600
+
+// Create a gradient
+gradient<r, g, b> = <me@x, me@y, 0.5>
+
+display(gradient)
+```
+
+This creates a simple gradient where red increases left-to-right and green increases top-to-bottom.
+
+## Writing WEFT
+
+### Setup
+
+```weft
+me<width> = 1000          // Canvas resolution
+me<height> = 1000
+me<fps> = 60              // Frame rate
+me<loop> = 600            // Loop duration in frames
+```
+
+### Creating Instances
+
+**Direct binding** creates instances from expressions:
+
+```weft
+gradient<r, g, b> = <me@x, me@y, 0.5>
+pulse<intensity> = sin(me@time * 2)
+```
+
+**Spindle calls** create instances from templates:
+
+```weft
+load("image.jpg")::img<r, g, b>
+noise(me@x, me@y, me@time)::n<value>
+```
+
+**User-defined spindles** encapsulate reusable patterns:
+
+```weft
+spindle circle(x, y, cx, cy, radius) :: <result> {
   let dx = x - cx
   let dy = y - cy
-  let d = sqrt(dx * dx + dy * dy)
-  result = if d < r then 1 else 0
+  let dist = sqrt(dx*dx + dy*dy)
+  result = if dist < radius then 1 else 0
+}
+
+circle(me@x, me@y, 0.5, 0.5, 0.2)::shape<value>
+```
+
+**Multiple outputs:**
+
+```weft
+spindle polar(x, y, cx, cy) :: <r, theta> {
+  let dx = x - cx
+  let dy = y - cy
+  r = sqrt(dx*dx + dy*dy)
+  theta = atan2(dy, dx)
 }
 ```
 
-### Strands: Data Flow
+### Local Bindings with `let`
 
-Strands connect outputs from spindles. Use the `@` operator to access specific output strands:
+Use `let` for intermediate calculations:
 
 ```weft
-// Load an image with r, g, b output strands
-load("image.jpg")::img<r, g, b>
+// Top-level bindings
+let center_x = 0.5
+let center_y = 0.5
 
-// Access individual color channels
-redChannel = img@r(me@x, me@y)
-greenChannel = img@g(me@x, me@y)
-blueChannel = img@b(me@x, me@y)
+// Inside spindles
+spindle kaleidoscope(x, y, segments) :: <kx, ky> {
+  let angle = atan2(y - 0.5, x - 0.5)
+  let radius = sqrt((x - 0.5)^2 + (y - 0.5)^2)
+  let segment_angle = (2 * 3.14159) / segments
+  let folded = abs(angle % segment_angle - segment_angle/2)
+
+  kx = 0.5 + radius * cos(folded)
+  ky = 0.5 + radius * sin(folded)
+}
 ```
 
-### Instance Bindings
+### Control Flow
 
-Create instances of spindles with specific outputs:
+**Conditional expressions:**
 
 ```weft
-// Direct binding
-gradient<r, g, b> = <me@x, me@y, 0.5>
+mask<value> = if me@x > 0.5 then 1 else 0
 
-// Function call binding
-circle(me@x, me@y, 0.5, 0.5, 0.2)::shape<value>
-
-// Strand remapping (coordinate transformation)
-img2<r> = img@r(me@x + 0.1, me@y)
+// Nested conditionals
+channel<r> = if me@x < 0.33 then img@r(me@x, me@y)
+             else if me@x < 0.66 then img@g(me@x, me@y)
+             else img@b(me@x, me@y)
 ```
 
-### Display and Render
-
-Output visual results using `display()` or `render()`:
+**For loops** (inside spindles only):
 
 ```weft
-// Display RGB channels
-display(red, green, blue)
+spindle box_blur(x, y, radius, samples) :: <result> {
+  let sum = 0
+  let count = 0
 
-// Display a single grayscale value
-display(intensity)
+  for i in (-samples to samples) {
+    for j in (-samples to samples) {
+      sum = sum + img@r(x + i * radius, y + j * radius)
+      count = count + 1
+    }
+  }
 
-// Render with named arguments
-render(r: red, g: green, b: blue)
+  result = sum / count
+}
 ```
 
-### Audio Synthesis
-
-Generate audio with the `play()` statement:
+### Accessing and Transforming Strands
 
 ```weft
-// Play a 440Hz sine wave
-play(sin(me@time * 440 * 2 * 3.14159))
+// Sample a strand at coordinates
+value = img@r(me@x, me@y)
 
-// Time-varying synthesis
-play(sin(me@time * (200 + 100 * sin(me@time))))
+// Apply coordinate transformation
+shifted = img@r(me@x + 0.1, me@y - 0.05)
+
+// Explicit axis remapping with ~
+warped<r> = img@r(
+  me@x ~ me@x * 2,
+  me@y ~ me@y + sin(me@time)
+)
+
+// Chain transformations
+ripple(me@x, me@y, mouse@x, mouse@y, 0.1)::water<wave>
+displaced<r> = img@r(
+  me@x ~ me@x + water@wave * 0.05,
+  me@y ~ me@y
+)
 ```
 
-### Expressions
+### Output Statements
 
-WEFT supports rich expression syntax:
+**`display()`** renders to the canvas (legacy syntax, auto-detects based on arguments):
 
 ```weft
-// Arithmetic
-x + y, x - y, x * y, x / y, x ^ y, x % y
+display(img@r, img@g, img@b)        // Three args → RGB rendering
+display(grayscale)                   // Single arg → grayscale or auto-detect
+```
 
-// Comparisons
-x == y, x != y, x << y, x >> y  // << and >> are "much less" and "much greater"
+**`render()`** explicitly renders to the GPU pipeline with named outputs:
 
-// Logical
-x and y, x or y, not x
+```weft
+render(r: final@r, g: final@g, b: final@b)  // RGB rendering
+render(rgb: final)                          // Auto-expand instance outputs
+```
 
-// Conditionals
-if condition then valueA else valueB
+**`play()`** synthesizes audio:
 
-// Function calls
-sin(x), cos(x), abs(x), sqrt(x), min(a, b), max(a, b)
+```weft
+play(sin(me@time * 440 * 2 * 3.14159))      // Mono audio
+play(left: osc1, right: osc2)               // Stereo with named channels
+```
+
+**`compute()`** executes on CPU without rendering:
+
+```weft
+compute(analysis@value)                     // Data processing only
+```
+
+### Expression Syntax
+
+```weft
+// Arithmetic: + - * / ^ %
+// Comparison: == != << >> (less/greater)
+// Logic: and or not
+// Control: if condition then value else value
+// Math functions: sin cos abs sqrt min max clamp mix smoothstep
 ```
 
 ## Example Programs
@@ -253,14 +341,17 @@ weft/
 
 ## Architecture
 
-WEFT uses a dual-renderer architecture:
+WEFT's execution pipeline:
 
 1. **Parser** (`src/lang/parser-new.js`): Ohm.js-based grammar parser that converts WEFT source to AST
 2. **Compiler** (`src/compilers/`): Transforms AST into executable representations
-3. **Renderers**:
+3. **Backends** (execution targets):
    - **WebGL Backend** (`src/backends/webgl-backend-full.js`): Compiles to GLSL fragment shaders for GPU execution
-   - **CPU Backend** (`src/backends/cpu-evaluator.js`): JavaScript-based fallback renderer
-4. **Coordinator** (`src/backends/coordinator.js`): Manages render pipeline and frame scheduling
+   - **CPU Backend** (`src/backends/cpu-evaluator.js`): JavaScript-based evaluation
+   - **Audio Backend**: Processes `play()` statements for audio synthesis
+4. **Coordinator** (`src/backends/coordinator.js`): Routes execution to appropriate backends and manages frame scheduling
+
+The backend system is designed to be extensible—future backends could target additional domains like data visualization, ML inference, or other computational contexts. Each backend receives the same AST and adapts it to its execution model, maintaining WEFT's domain-agnostic abstraction.
 
 ## Contributing
 
