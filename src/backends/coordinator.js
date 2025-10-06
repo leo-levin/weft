@@ -65,10 +65,6 @@ export class Coordinator {
     this.graph = new RenderGraph(this.ast, this.env);
     const graphResult = this.graph.build();
 
-    console.log('[Coordinator] Render graph built:', {
-        nodes: graphResult.nodes.size,
-        execOrder: graphResult.execOrder
-    });
 
     this.cpuEvaluator = new CPUEvaluator(this.env, this.graph);
 
@@ -91,7 +87,6 @@ export class Coordinator {
       }
     }
 
-    console.log('[Coordinator] Contexts needed:',Array.from(contextsNeeded));
 
     const compilePromises = [];
 
@@ -99,14 +94,11 @@ export class Coordinator {
       const backend = this.getBackendForContext(context);
       if (backend) {
         backend.coordinator = this;
-        compilePromises.push( backend.compile(this.ast, this.env) .then(() =>
-          console.log(`[Coordinator] ${backend.name} compiled`))
-        );
+        compilePromises.push(backend.compile(this.ast, this.env));
       }
     }
 
     await Promise.all(compilePromises);
-    console.log('[Coordinator] Compilation complete');
     return true;
   }
 
@@ -124,7 +116,6 @@ export class Coordinator {
     this.running = true;
     this.lastFrameTime = performance.now();
     this.mainLoop();
-    console.log('[Coord] render loop started')
 
   }
 
@@ -149,13 +140,11 @@ export class Coordinator {
       cancelAnimationFrame(this.frameId);
       this.frameId = null;
     }
-    console.log('[Coord] render loop stopped');
   }
 
   getValue(instName, outName, me) {
     const node = this.graph.nodes.get(instName);
     if (!node) {
-      console.warn(`[Coordinator] Instance "${instName}" not found`);
       return 0;
     }
     const routes = node.contexts;
@@ -171,7 +160,6 @@ export class Coordinator {
       return this.cpuEvaluator.getValue(instName, outName, me);
     }
 
-    console.warn(`[Coordinator] No way to evaluate ${instName}@${outName}`);
     return 0;
   }
 

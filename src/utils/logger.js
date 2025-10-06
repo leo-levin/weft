@@ -8,6 +8,7 @@ export class Logger {
     this.autoScroll = true;
     this.pendingUpdate = false;
     this.updatePending = false;
+    this.lastKnownComponents = [];
   }
 
   log(level, component, message, data = null) {
@@ -17,6 +18,15 @@ export class Logger {
     this.logs.push(entry);
     if (this.logs.length > this.maxLogs) {
       this.logs.shift();
+    }
+
+    // Update component filters if new component appears
+    const currentComponents = this.getActiveComponents();
+    if (!this.lastKnownComponents ||
+        currentComponents.length !== this.lastKnownComponents.length ||
+        !currentComponents.every(c => this.lastKnownComponents.includes(c))) {
+      this.lastKnownComponents = currentComponents;
+      this.updateComponentFilterUI();
     }
 
     this.scheduleUpdate();
@@ -83,8 +93,6 @@ export class Logger {
   }
 
   updateUI() {
-    this.updateComponentFilterUI();
-
     const logOutput = document.getElementById('logOutput');
     if (!logOutput) return;
 
@@ -159,12 +167,16 @@ export class Logger {
                        this.componentFilters[component] === true;
       checkbox.checked = isChecked;
 
-      checkbox.addEventListener('change', () => {
+      checkbox.addEventListener('change', (e) => {
+        e.stopPropagation();
+
         if (checkbox.checked) {
           this.componentFilters[component] = true;
         } else {
           delete this.componentFilters[component];
         }
+
+        // Don't recreate the UI, just update the log display
         this.scheduleUpdate();
       });
 
@@ -186,6 +198,7 @@ export class Logger {
     if (showAllBtn && !showAllBtn.dataset.listenerAdded) {
       showAllBtn.addEventListener('click', () => {
         this.componentFilters = {};
+        this.updateComponentFilterUI(); // Refresh checkboxes
         this.scheduleUpdate();
       });
       showAllBtn.dataset.listenerAdded = 'true';
@@ -193,13 +206,13 @@ export class Logger {
 
     if (hideAllBtn && !hideAllBtn.dataset.listenerAdded) {
       hideAllBtn.addEventListener('click', () => {
+        // Hide all means show only the first one
         const components = this.getActiveComponents();
         this.componentFilters = {};
-        // Set all to false by not including them (empty object shows all)
-        // But we need at least one component to be shown, so show only first
         if (components.length > 0) {
           this.componentFilters[components[0]] = true;
         }
+        this.updateComponentFilterUI(); // Refresh checkboxes
         this.scheduleUpdate();
       });
       hideAllBtn.dataset.listenerAdded = 'true';

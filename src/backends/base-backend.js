@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger.js';
+
 export class BaseBackend{
   constructor(env, name, context){
     this.env = env;
@@ -24,19 +26,24 @@ export class BaseBackend{
     return this.coordinator?.getValue(inst,out, me) ?? 0;
   }
 
+  // Override this in subclasses to provide compiled code for viewing
+  getCompiledCode() {
+    return `// No compiled code available for ${this.name} backend`;
+  }
+
   filterStatements(ast, ...types) {
       return ast.statements.filter(s => types.includes(s.type));
   }
 
   log(msg, level = 'info') {
-    console.log(`[${this.name}] ${msg}`);
+    logger.log(level, this.name, msg);
   }
 
   warn(msg) {
-      console.warn(`[${this.name}] ${msg}`);
+    logger.warn(this.name, msg);
   }
 
   error(msg, err) {
-    console.error(`[${this.name}] ${msg}`,err);
+    logger.error(this.name, msg, err ? { error: err.message || err } : null);
   }
 }

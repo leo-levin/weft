@@ -31,11 +31,8 @@ export class WebGLBackend extends BaseBackend {
 
   async compile(ast) {
     try {
-      console.log('🔥 WebGL compile starting...');
-
       // Initialize WebGL if needed
       if (!this.gl) {
-        console.log('🔥 WebGL context not available, initializing...');
         if (!this.initWebGL()) {
           throw new Error('Failed to initialize WebGL context');
         }
@@ -46,31 +43,44 @@ export class WebGLBackend extends BaseBackend {
       const displayStmts = this.filterStatements(ast, 'DisplayStmt', 'RenderStmt');
 
       if (displayStmts.length === 0) {
-        console.error('❌ No display statements found');
-        this.log('No display statements found');
+        this.warn('No display statements found');
         return false;
       }
-      console.log('✅ Found display statements:', displayStmts.length);
 
       // Store for shader generation
       this.displayStatement = displayStmts[0];
       this.currentAST = ast;
 
       // Generate and compile shaders
-      console.log('🔥 About to compile shaders...');
       const success = this.compileShaders();
       if (!success) {
-        console.error('❌ Shader compilation returned false');
         throw new Error('Shader compilation failed');
       }
 
-      this.log('WebGL compilation completed successfully');
+      this.log('Compilation successful');
+
+      // Store compiled shader for viewing
+      this.compiledShader = this.getCompiledShader();
+
       return true;
 
     } catch (error) {
       this.error('WebGL compilation failed:', error);
       return false;
     }
+  }
+
+  getCompiledCode() {
+    // Override BaseBackend method
+    if (!this.lastCompiledFragmentShader) {
+      return '// No fragment shader compiled yet';
+    }
+    return `// Fragment Shader (GLSL)\n\n${this.lastCompiledFragmentShader}`;
+  }
+
+  // Deprecated - kept for compatibility
+  getCompiledShader() {
+    return this.getCompiledCode();
   }
 
   render() {
@@ -119,7 +129,7 @@ export class WebGLBackend extends BaseBackend {
     this.gl = this.canvas.getContext('webgl2', { preserveDrawingBuffer: true }) ||
               this.canvas.getContext('webgl', { preserveDrawingBuffer: true });
     if (!this.gl) {
-      console.error('WebGL not supported');
+      this.error('WebGL not supported');
       return false;
     }
 
@@ -165,23 +175,21 @@ export class WebGLBackend extends BaseBackend {
       }
     `;
 
-    console.log('🔥 Generating fragment shader...');
     let fragmentShader;
     try {
       fragmentShader = this.generateFragmentShader();
-      console.log('🔥 Fragment shader generation completed');
     } catch (error) {
-      console.error('❌ Fragment shader generation threw error:', error);
+      this.error('Fragment shader generation failed:', error);
       return false;
     }
 
     if (!fragmentShader) {
-      console.error('❌ Fragment shader generation returned null');
+      this.error('Fragment shader generation returned null');
       return false;
     }
 
-    console.log('📜 Generated fragment shader:');
-    console.log(fragmentShader);
+    // Store for viewing
+    this.lastCompiledFragmentShader = fragmentShader;
 
     this.program = this.createProgram(vertexShader, fragmentShader);
     if (!this.program) {
@@ -307,7 +315,6 @@ export class WebGLBackend extends BaseBackend {
   // ===== Shader Generation =====
 
   generateFragmentShader() {
-    console.log('🔥 generateFragmentShader called');
 
     if (!this.displayStatement || !this.currentAST) {
       this.error('No display statement or AST available');
@@ -333,7 +340,7 @@ export class WebGLBackend extends BaseBackend {
         }
       }
     } catch (error) {
-      console.error('❌ Error in spindle processing:', error);
+      this.error('Error in spindle processing:', error);
       throw error;
     }
 
@@ -369,7 +376,7 @@ export class WebGLBackend extends BaseBackend {
         }
       }
     } catch (error) {
-      console.error('❌ Error in statement processing:', error);
+      this.error('Error in statement processing:', error);
       throw error;
     }
 
@@ -669,7 +676,6 @@ ${glslCode.join('\n')}
       inst(StrExpr, _), () => '0.0',
 
       inst(MeExpr, _), (field) => {
-        console.log('🔍 MeExpr field:', field);
         return match(field,
           'x', () => 'v_texCoord.x',
           'y', () => 'v_texCoord.y',
@@ -819,7 +825,6 @@ ${glslCode.join('\n')}
         return numValue.toString() + (Number.isInteger(numValue) ? '.0' : '');
 
       case 'Me':
-        console.log('🔍 compileObjectToGLSL Me field:', node.field);
         return match(node.field,
           'x', () => 'v_texCoord.x',
           'y', () => 'v_texCoord.y',
@@ -1259,28 +1264,19 @@ ${glslCode.join('\n')}
     let remappedX = 'v_texCoord.x';
     let remappedY = 'v_texCoord.y';
 
-    console.log('🔍 StrandRemap mappings:', node.mappings);
-
     for (const mapping of node.mappings) {
-      console.log('🔍 Raw mapping:', mapping);
       const sourceCode = this.compileToGLSL(mapping.source, env, instanceOutputs, localScope);
       const targetCode = this.compileToGLSL(mapping.target, env, instanceOutputs, localScope);
-
-      console.log(`🔍 Compiled mapping: ${sourceCode} ~ ${targetCode}`);
 
       // If SOURCE is me@x (v_texCoord.x), replace x-coordinate with TARGET
       if (sourceCode === 'v_texCoord.x') {
         remappedX = targetCode;
-        console.log(`✅ Remapped X to: ${remappedX}`);
       }
       // If SOURCE is me@y (v_texCoord.y), replace y-coordinate with TARGET
       else if (sourceCode === 'v_texCoord.y') {
         remappedY = targetCode;
-        console.log(`✅ Remapped Y to: ${remappedY}`);
       }
     }
-
-    console.log(`🎯 Final coords: (${remappedX}, ${remappedY})`);
 
     // Check if source is texture
     const textureInfo = this.textures.get(baseName);
@@ -1434,7 +1430,6 @@ ${glslCode.join('\n')}
       const info = gl.getShaderInfoLog(shader);
       const typeName = type === gl.VERTEX_SHADER ? 'vertex' : 'fragment';
       this.error(`${typeName} shader compilation error: ${info}`);
-      console.error(`Shader source:\n${source.split('\n').map((line, i) => `${i+1}: ${line}`).join('\n')}`);
       gl.deleteShader(shader);
       return null;
     }

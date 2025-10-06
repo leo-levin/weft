@@ -6,12 +6,9 @@ import { WebGLBackend } from '../backends/webgl-backend-full.js';
 import { clamp } from '../utils/math.js';
 import { logger } from '../utils/logger.js';
 import { match, _ } from '../utils/match.js';
-import { highlightWEFT } from './codemirror-weft-mode.js';
 
-console.log('✅ Starting WEFT application (NEW ARCHITECTURE)...');
-
-// Enable debug logging
-logger.setFilters({ debug: false, info: false, warn: false, error: true });
+// Configure logging defaults
+logger.setFilters({ debug: false, info: true, warn: true, error: true });
 
 // DOM elements
 const errorsEl = document.getElementById('errors');
@@ -45,7 +42,7 @@ let coordinator = null;
 
 // Initialize backends
 function initializeBackends() {
-  console.log('🔧 Initializing backends...');
+  logger.info('Main', 'Initializing backends');
 
   // Create WebGL backend for visual context
   const webglBackend = new WebGLBackend(env, 'webgl', 'visual');
@@ -56,7 +53,7 @@ function initializeBackends() {
     webgl: webglBackend
   });
 
-  console.log('✅ Backends initialized');
+  logger.info('Main', 'Backends initialized');
   return coordinator;
 }
 
@@ -414,6 +411,32 @@ function updateInstanceViewer() {
   }
 }
 
+// Update compiled code viewer
+function updateCompiledCodeViewer() {
+  const compiledCodeViewer = document.getElementById('compiledCodeViewer');
+  if (!compiledCodeViewer || !coordinator) return;
+
+  try {
+    let code = '';
+
+    for (const [name, backend] of coordinator.backends) {
+      if (backend && backend.getCompiledCode) {
+        code += `// ========== ${name.toUpperCase()} Backend ==========\n\n`;
+        code += backend.getCompiledCode();
+        code += '\n\n\n';
+      }
+    }
+
+    if (code === '') {
+      code = '// No compiled code available';
+    }
+
+    compiledCodeViewer.textContent = code;
+  } catch (error) {
+    compiledCodeViewer.textContent = `Error: ${error.message}`;
+  }
+}
+
 // Canvas sizing - maintain aspect ratio
 function fitCanvas() {
   // Skip auto-sizing if user has manually set dimensions via me<width> or me<height>
@@ -455,8 +478,6 @@ function fitCanvas() {
   env.resH = height;
 
   document.getElementById('resPill').textContent = `${width}×${height}`;
-
-  console.log(`📐 Canvas resized to: ${width}×${height}`);
 }
 
 new ResizeObserver(fitCanvas).observe(canvas);
@@ -489,9 +510,6 @@ function setupEditorListeners() {
   editor.on('change', () => {
     localStorage.setItem('weft_code', editor.getValue());
 
-    // Apply syntax highlighting
-    highlightWEFT(editor);
-
     if (!env.autorun) return;
 
     clearTimeout(debounceTimer);
@@ -514,12 +532,10 @@ playPauseBtn.addEventListener('click', () => {
     coordinator.stop();
     playPauseBtn.textContent = '▶';
     isPlaying = false;
-    console.log('⏸ Stopped');
   } else {
     coordinator.start();
     playPauseBtn.textContent = '⏸';
     isPlaying = true;
-    console.log('▶ Started');
   }
 });
 
@@ -540,14 +556,11 @@ async function runCode() {
 
   try {
     const src = editor.getValue();
-    console.log('📝 Parsing program...', { length: src.length });
+    logger.info('Parser', `Parsing ${src.length} characters`);
 
     // Parse WEFT code
     const ast = parse(src);
-    console.log('✅ AST parsed successfully', {
-      statements: ast.statements.length,
-      types: ast.statements.map(s => s.type)
-    });
+    logger.info('Parser', `AST parsed: ${ast.statements.length} statements`);
 
     // Reset manual resize flag before processing
     env.manualResize = false;
@@ -560,12 +573,11 @@ async function runCode() {
         const value = match(stmt.value.type,
           'Num', () => stmt.value.v,
           _, (n) => {
-            console.warn(`EnvAssignment: cannot evaluate ${stmt.value.type} at parse time`);
+            logger.warn('Parser', `Cannot evaluate ${stmt.value.type} at parse time`);
             return null;
           }
         );
         if (value !== null) {
-          console.log(`Setting env.${field} = ${value}`);
           match(field,
             'resW', () => { env.resW = value; canvas.width = value; env.manualResize = true; },
             'resH', () => { env.resH = value; canvas.height = value; env.manualResize = true; },
@@ -577,7 +589,7 @@ async function runCode() {
             'bpm', () => { env.bpm = value; },
             'timesig_num', () => { env.timesig_num = value; },
             'timesig_denom', () => { env.timesig_denom = value; },
-            _, (n) => console.warn(`Unknown env field: ${field}`)
+            _, (n) => logger.warn('Parser', `Unknown env field: ${field}`)
           );
         }
       }
@@ -600,14 +612,14 @@ async function runCode() {
     coordinator.ast = ast;
 
     // Compile all backends
-    console.log('🔨 Compiling backends...');
+    logger.info('Compiler', 'Compiling backends...');
     const compileSuccess = await coordinator.compile();
 
     if (!compileSuccess) {
       throw new Error('Backend compilation failed');
     }
 
-    console.log('✅ Compilation successful');
+    logger.info('Compiler', 'Compilation successful');
 
     // Update graph viewer
     updateGraphViewer();
@@ -615,13 +627,15 @@ async function runCode() {
     // Update instance viewer
     updateInstanceViewer();
 
+    // Update compiled code viewer
+    updateCompiledCodeViewer();
+
     // Start rendering
-    console.log('▶ Starting coordinator...');
     coordinator.start();
     isPlaying = true;
     playPauseBtn.textContent = '⏸';
 
-    console.log('✅ Program running successfully');
+    logger.info('Main', 'Program running');
 
   } catch (e) {
     const errorMsg = (e && e.message) ? e.message : String(e);
@@ -633,13 +647,7 @@ async function runCode() {
       astViewer.textContent = `Parse Error: ${errorMsg}`;
     }
 
-    console.error('❌ Program execution failed:', errorMsg);
-    console.error(e.stack);
-
-    logger.error('Main', 'Program execution failed', {
-      error: errorMsg,
-      stack: e.stack
-    });
+    logger.error('Main', 'Program execution failed', { error: errorMsg });
   }
 }
 
@@ -654,37 +662,19 @@ base<b> = sin(me@time)
 display(base@r, base@g, base@b)`;
 }
 
-// Debug panel controls
-function initDebugPanel() {
-  const debugTabs = document.querySelectorAll('.debug-tab');
-  const debugTabPanes = document.querySelectorAll('.debug-tab-pane');
-  const canvasTabs = document.querySelectorAll('.canvas-tab');
-  const canvasTabPanes = document.querySelectorAll('.canvas-tab-pane');
+// Initialize UI controls
+function initUI() {
+  // Inspector tabs
+  const inspectorTabs = document.querySelectorAll('.inspector-tab');
+  const inspectorPanes = document.querySelectorAll('.inspector-pane');
 
-  // Debug sub-tabs
-  debugTabs.forEach(tab => {
+  inspectorTabs.forEach(tab => {
     tab.addEventListener('click', () => {
       const targetTab = tab.dataset.tab;
-      debugTabs.forEach(t => t.classList.remove('active'));
+      inspectorTabs.forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
 
-      debugTabPanes.forEach(pane => {
-        pane.classList.remove('active');
-        if (pane.id === targetTab + 'Tab') {
-          pane.classList.add('active');
-        }
-      });
-    });
-  });
-
-  // Canvas tabs
-  canvasTabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      const targetTab = tab.dataset.tab;
-      canvasTabs.forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-
-      canvasTabPanes.forEach(pane => {
+      inspectorPanes.forEach(pane => {
         pane.classList.remove('active');
         if (pane.id === targetTab + 'Pane') {
           pane.classList.add('active');
@@ -692,6 +682,64 @@ function initDebugPanel() {
       });
     });
   });
+
+  // Collapsible sections
+  const sectionHeaders = document.querySelectorAll('.section-header');
+  sectionHeaders.forEach(header => {
+    header.addEventListener('click', () => {
+      const section = header.dataset.section;
+      const content = document.getElementById(section + 'Viewer');
+
+      if (content.classList.contains('collapsed')) {
+        content.classList.remove('collapsed');
+        header.classList.remove('collapsed');
+      } else {
+        content.classList.add('collapsed');
+        header.classList.add('collapsed');
+      }
+    });
+  });
+
+  // Inspector panel toggle
+  const inspectorToggle = document.getElementById('inspectorToggle');
+  const inspectorPanel = document.getElementById('inspectorPanel');
+
+  if (inspectorToggle && inspectorPanel) {
+    // Load saved state
+    const savedCollapsed = localStorage.getItem('inspectorCollapsed') === 'true';
+    if (savedCollapsed) {
+      inspectorPanel.classList.add('collapsed');
+      inspectorToggle.classList.add('collapsed');
+      inspectorToggle.title = 'Show Inspector';
+    }
+
+    inspectorToggle.addEventListener('click', () => {
+      const isCollapsed = inspectorPanel.classList.toggle('collapsed');
+      inspectorToggle.classList.toggle('collapsed');
+      inspectorToggle.title = isCollapsed ? 'Show Inspector' : 'Hide Inspector';
+
+      // Save state
+      localStorage.setItem('inspectorCollapsed', isCollapsed);
+    });
+  }
+
+  // Settings menu toggle
+  const settingsBtn = document.getElementById('settingsBtn');
+  const settingsMenu = document.getElementById('settingsMenu');
+
+  if (settingsBtn && settingsMenu) {
+    settingsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      settingsMenu.classList.toggle('hidden');
+    });
+
+    // Close menu when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!settingsMenu.contains(e.target) && !settingsBtn.contains(e.target)) {
+        settingsMenu.classList.add('hidden');
+      }
+    });
+  }
 
   // Log filters
   const logFilters = document.querySelectorAll('#logFilters input[type="checkbox"]');
@@ -704,6 +752,59 @@ function initDebugPanel() {
       });
       logger.setFilters(filters);
     });
+  });
+
+  // Panel resize functionality
+  initPanelResize();
+}
+
+// Add resizable inspector panel
+function initPanelResize() {
+  const inspectorPanel = document.getElementById('inspectorPanel');
+  if (!inspectorPanel) return;
+
+  let isResizing = false;
+  let startY = 0;
+  let startHeight = 0;
+
+  // Create resize handle
+  const resizeHandle = document.createElement('div');
+  resizeHandle.id = 'inspectorResizeHandle';
+  resizeHandle.style.cssText = `
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 8px;
+    cursor: ns-resize;
+    z-index: 10;
+  `;
+  inspectorPanel.style.position = 'relative';
+  inspectorPanel.insertBefore(resizeHandle, inspectorPanel.firstChild);
+
+  resizeHandle.addEventListener('mousedown', (e) => {
+    isResizing = true;
+    startY = e.clientY;
+    startHeight = inspectorPanel.offsetHeight;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!isResizing) return;
+
+    const deltaY = startY - e.clientY;
+    const newHeight = Math.max(150, Math.min(600, startHeight + deltaY));
+    inspectorPanel.style.maxHeight = newHeight + 'px';
+    inspectorPanel.style.minHeight = newHeight + 'px';
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (isResizing) {
+      isResizing = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
   });
 }
 
@@ -720,14 +821,11 @@ document.addEventListener('DOMContentLoaded', () => {
       editor.setValue(defaultCode().trim());
     }
 
-    // Apply initial syntax highlighting
-    highlightWEFT(editor);
-
     // Setup editor event listeners
     setupEditorListeners();
 
-    // Initialize debug panel
-    initDebugPanel();
+    // Initialize UI controls
+    initUI();
 
     // Run initial code
     runCode();
@@ -738,10 +836,9 @@ document.addEventListener('DOMContentLoaded', () => {
 function updateClock() {
   const clockDisplay = document.getElementById('clockDisplay');
   if (clockDisplay && env) {
-    const time = ((env.frame % env.loop) / env.targetFps).toFixed(2);
+    const time = ((env.frame % env.loop) / env.targetFps).toFixed(1);
     const frame = env.frame % env.loop;
-    const absTime = ((Date.now() - env.startTime) / 1000).toFixed(1);
-    clockDisplay.textContent = `${time}s | ${frame}/${env.loop} | ${absTime} | ${env.bpm}`;
+    clockDisplay.textContent = `${time}s • ${frame}/${env.loop}`;
   }
   requestAnimationFrame(updateClock);
 }
