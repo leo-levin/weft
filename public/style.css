@@ -1,5 +1,4 @@
 :root {
-  /* Apple-inspired refined color palette */
   --bg: #1c1c1e;
   --bg-secondary: #2c2c2e;
   --bg-tertiary: #3a3a3c;
@@ -16,7 +15,6 @@
   --good: #30d158;
   --warning: #ff9f0a;
 
-  /* Tighter, more refined spacing system */
   --spacing-xs: 2px;
   --spacing-sm: 4px;
   --spacing-md: 6px;
@@ -29,7 +27,6 @@
   --radius-lg: 8px;
   --radius-xl: 12px;
 
-  /* Typography scale */
   --font-size-xs: 11px;
   --font-size-sm: 12px;
   --font-size-md: 13px;
@@ -37,13 +34,11 @@
   --font-size-xl: 16px;
   --font-size-xxl: 18px;
 
-  /* Refined shadows */
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.2);
   --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.3);
   --shadow-xl: 0 16px 64px rgba(0, 0, 0, 0.4);
 
-  /* Interactive states */
   --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-normal: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-slow: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
