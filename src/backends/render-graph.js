@@ -19,6 +19,7 @@ export class RenderGraph {
   }
   build() {
     this.collectInstances();
+    this.resolveNumericStrandIndices();
     this.markRequiredOutputs();
     this.extractDeps();
     this.topoSort();
@@ -46,6 +47,45 @@ export class RenderGraph {
       const node = this.nodes.get(name);
       for (const outputName of stmt.outputs) {
         node.outputs.set(outputName, stmt.expr);
+      }
+    }
+  }
+
+  resolveNumericStrandIndices() {
+    // Walk the entire AST and resolve numeric strand indices to actual names
+    for (const stmt of this.ast.statements) {
+      this.resolveInNode(stmt);
+    }
+  }
+
+  resolveInNode(node) {
+    if (!node) return;
+
+    // Handle StrandAccessExpr with numeric indices
+    if (node.type === 'StrandAccess' && typeof node.out === 'number') {
+      const instance = this.env.instances.get(node.base.name);
+      if (instance) {
+        const strandNames = Object.keys(instance.outs);
+        const actualName = strandNames[node.out];
+        if (actualName) {
+          node.out = actualName; // Mutate AST to replace number with string
+        } else {
+          throw new Error(
+            `Strand index ${node.out} out of bounds for instance '${node.base.name}' (has ${strandNames.length} strands)`
+          );
+        }
+      } else {
+        throw new Error(
+          `Instance '${node.base.name}' not found when resolving numeric strand index`
+        );
+      }
+    }
+
+    // Recursively resolve in all children
+    if (node.getChildren) {
+      const children = node.getChildren();
+      for (const child of children) {
+        this.resolveInNode(child);
       }
     }
   }

@@ -187,10 +187,9 @@ export class Coordinator {
       type: node.type,
       outputs: Array.from(node.outputs.keys()),
       deps: Array.from(node.deps),
-      requiredOutputs:
-      Array.from(node.requiredOutputs),
+      requiredOutputs: Array.from(node.requiredOutputs),
       contexts: Array.from(node.contexts)
-      })),
+    })),
       execOrder: this.graph.execOrder
     };
   }

@@ -134,7 +134,7 @@ const semantics = grammar.createSemantics()
     },
 
     Program(stmts) {
-      const allStatements = stmts.toAST();
+      const allStatements = stmts.toAST().flat();
       const pragmas = allStatements.filter(s => s.type === 'Pragma');
       const statements = allStatements.filter(s => s.type !== 'Pragma');
 
@@ -180,11 +180,22 @@ const semantics = grammar.createSemantics()
   },
 
   InstanceBinding_direct(name, _sp1, outputs, _sp2, _eq, _sp3, expr) {
-    return new InstanceBinding(
-      name.toAST(),
-      outputs.toAST(),
-      expr.toAST()
-    );
+    const instName = name.toAST();
+    const outputList = outputs.toAST();
+    const exprAST = expr.toAST();
+
+    if(exprAST.type == 'Bundle') {
+      const items = exprAST.items;
+      if(items.length !== 1 && items.length !== outputList.length) {
+        throw new Error(`Instance has length ${items.length} items but ${outputList.length} outputs`);
+      }
+      const exprs = items.length === 1
+      ? Array(outputList.length).fill(items[0]) : items;
+
+      return outputList.map((out, i) =>
+        new InstanceBinding(instName, [out], exprs[i]));
+    }
+    return outputList.map(out => new InstanceBinding(instName, [out], exprAST));
   },
 
   InstanceBinding_call(func, _lp, args, _rp, _dc, inst, outputs) {
@@ -193,6 +204,46 @@ const semantics = grammar.createSemantics()
       outputs.toAST(),
       new CallExpr(func.toAST(), args.toAST())
     );
+  },
+
+  InstanceBinding_multiCall(func, _lt, countNode, _gt, _lp, args, _rp, _dc, inst, outputs) {
+    const count = parseInt(countNode.sourceString);
+    const funcName = func.toAST();
+    const instName = inst.toAST();
+    const outputList = outputs.toAST();
+    const argList = args.toAST();
+
+    if (outputList.length !== count) {
+      throw new Error(
+        `Multi-call count <${count}> doesn't match ${outputList.length} outputs`
+      );
+    }
+
+    const expandedArgs = argList.map(arg => {
+      if (arg.type === 'Bundle') {
+        const items = arg.items;
+        if (items.length !== 1 && items.length !== count) {
+          throw new Error(`Bundle has ${items.length} items, expected 1 or ${count}`);
+        }
+        return items.length === 1 ? Array(count).fill(items[0]) : items;
+      }
+
+      if (arg.type === 'Var') {
+        return Array.from({length: count}, (_, i) =>
+          new StrandAccessExpr(arg, i)
+        );
+      }
+      return Array(count).fill(arg);
+    });
+
+    return Array.from({length: count}, (_, i) => {
+      const callArgs = expandedArgs.map(expanded => expanded[i]);
+      return new InstanceBinding(
+        instName,
+        [outputList[i]],
+        new CallExpr(funcName, callArgs)
+      );
+    });
   },
 
   Assignment(name, op, expr) {
