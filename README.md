@@ -1,7 +1,7 @@
 # WEFT
 
 A creative programming language for working with images, video, audio, and data.
-Play with WEFT on the (playground)[https://leo-levin.github.io/weft/public/index.html]
+Play with WEFT on the [playground](https://leo-levin.github.io/weft/public/index.html)
 
 ## 🪐 What is WEFT?
 WEFT is built on a simple insight: **all media is just functions over coordinate spaces**.
