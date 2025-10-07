@@ -6,8 +6,11 @@ A creative programming language for working with images, video, audio, and data.
 WEFT is built on a simple insight: **all media is just functions over coordinate spaces**.
 
 🖼️ Images are `(x, y) → color`
+
 🎥 Video is `(x, y, time) → color`
+
 🔊 Audio is `(time) → amplitude`
+
 📊 Data is `(any_coordinates) → value`
 
 Since everything reduces to coordinate mappings, the same mathematical patterns work everywhere. WEFT doesn't care if its coordinates represent pixels, audio samples, or data points — it transforms mathematical relationships. This abstraction lets you write creative techniques once and apply them to video, audio, visualization, and control without rewriting code.
@@ -32,10 +35,10 @@ There are no artificial distinctions between types of inputs. A constant `4` and
 
 ```weft
 spindle ripple(x, y, cx, cy, freq) :: <wave> {
-  let dx = x - cx
-  let dy = y - cy
-  let dist = sqrt(dx*dx + dy*dy)
-  wave = sin(dist * freq)
+  dx = x - cx
+  dy = y - cy
+  dist = sqrt(dx*dx + dy*dy)
+  out wave = sin(dist * freq)
 }
 ```
 Spindles abstract patterns. The same ripple spindle works on spatial coordinates, color coordinates, or any other domain—it's just math over numbers.
@@ -127,10 +130,10 @@ noise(me@x, me@y, me@time)::n<value>
 
 ```weft
 spindle circle(x, y, cx, cy, radius) :: <result> {
-  let dx = x - cx
-  let dy = y - cy
-  let dist = sqrt(dx*dx + dy*dy)
-  result = if dist < radius then 1 else 0
+  dx = x - cx
+  dy = y - cy
+  dist = sqrt(dx*dx + dy*dy)
+  out result = if dist < radius then 1 else 0
 }
 
 circle(me@x, me@y, 0.5, 0.5, 0.2)::shape<value>
@@ -140,31 +143,27 @@ circle(me@x, me@y, 0.5, 0.5, 0.2)::shape<value>
 
 ```weft
 spindle polar(x, y, cx, cy) :: <r, theta> {
-  let dx = x - cx
-  let dy = y - cy
-  r = sqrt(dx*dx + dy*dy)
-  theta = atan2(dy, dx)
+  dx = x - cx
+  dy = y - cy
+  out r = sqrt(dx*dx + dy*dy)
+  out theta = atan2(dy, dx)
 }
 ```
 
-### Local Bindings with `let`
+### Local Variables and Outputs
 
-Use `let` for intermediate calculations:
+Inside spindles, use regular assignments for local variables and `out` for outputs:
 
 ```weft
-// Top-level bindings
-let center_x = 0.5
-let center_y = 0.5
-
 // Inside spindles
 spindle kaleidoscope(x, y, segments) :: <kx, ky> {
-  let angle = atan2(y - 0.5, x - 0.5)
-  let radius = sqrt((x - 0.5)^2 + (y - 0.5)^2)
-  let segment_angle = (2 * 3.14159) / segments
-  let folded = abs(angle % segment_angle - segment_angle/2)
+  angle = atan2(y - 0.5, x - 0.5)
+  radius = sqrt((x - 0.5)^2 + (y - 0.5)^2)
+  segment_angle = (2 * 3.14159) / segments
+  folded = abs(angle % segment_angle - segment_angle/2)
 
-  kx = 0.5 + radius * cos(folded)
-  ky = 0.5 + radius * sin(folded)
+  out kx = 0.5 + radius * cos(folded)
+  out ky = 0.5 + radius * sin(folded)
 }
 ```
 
@@ -185,8 +184,8 @@ channel<r> = if me@x < 0.33 then img@r(me@x, me@y)
 
 ```weft
 spindle box_blur(x, y, radius, samples) :: <result> {
-  let sum = 0
-  let count = 0
+  sum = 0
+  count = 0
 
   for i in (-samples to samples) {
     for j in (-samples to samples) {
@@ -195,7 +194,7 @@ spindle box_blur(x, y, radius, samples) :: <result> {
     }
   }
 
-  result = sum / count
+  out result = sum / count
 }
 ```
 
@@ -305,9 +304,9 @@ cx = 0.5 + 0.3 * sin(me@time)
 cy = 0.5 + 0.3 * cos(me@time)
 
 // Create circle
-let dx = me@x - cx
-let dy = me@y - cy
-let dist = sqrt(dx * dx + dy * dy)
+dx = me@x - cx
+dy = me@y - cy
+dist = sqrt(dx * dx + dy * dy)
 brightness = if dist < 0.1 then 1 else 0
 
 display(brightness)
@@ -348,21 +347,7 @@ WEFT's execution pipeline:
 3. **Backends** (execution targets):
    - **WebGL Backend** (`src/backends/webgl-backend-full.js`): Compiles to GLSL fragment shaders for GPU execution
    - **CPU Backend** (`src/backends/cpu-evaluator.js`): JavaScript-based evaluation
-   - **Audio Backend**: Processes `play()` statements for audio synthesis
+   - **Audio Backend**: Processes `play()` statements for audio synthesis. WORK IN PROGRESS.
 4. **Coordinator** (`src/backends/coordinator.js`): Routes execution to appropriate backends and manages frame scheduling
 
-The backend system is designed to be extensible—future backends could target additional domains like data visualization, ML inference, or other computational contexts. Each backend receives the same AST and adapts it to its execution model, maintaining WEFT's domain-agnostic abstraction.
-
-## Contributing
-
-WEFT is an experimental language under active development. Contributions, bug reports, and feedback are welcome!
-
-## License
-
-[Add your license here]
-
-## Learn More
-
-- Explore the [example programs](https://github.com/leo-levin/weft/tree/main) in the repository
-- Read the [implementation docs](https://github.com/leo-levin/weft/blob/main/.claude/claude.md) for architecture details
-- Open the playground and start experimenting!
+The backend system is designed to be extensible—future backends could target additional domains like data (via csv/json), 3d rendering, web sockets, OSC, NDI, etc. Each backend receives the same AST and adapts it to its execution model, maintaining WEFT's domain-agnostic abstraction.

@@ -44,7 +44,8 @@ const grammar = ohm.grammar(`
             | Expr                 -- positional
 
     Block = sym<"{"> BlockStatement* sym<"}">
-    BlockStatement = LetBinding | Assignment | ForLoop
+    BlockStatement = OutputAssignment | Assignment | ForLoop
+    OutputAssignment = kw<"out"> ident sym<"="> Expr
     ForLoop = kw<"for"> ident kw<"in"> sym<"("> Expr kw<"to"> Expr sym<")"> Block
 
     OutputSpec = sym<"<"> ListOf<ident, ","> sym<">">
@@ -94,7 +95,7 @@ const grammar = ohm.grammar(`
     ident = ~keyword letter identRest* space*
     identRest = letter | digit | "_"
     keyword = "spindle" | "if" | "then" | "else" | "not" | "and" | "or"
-            | "display" | "render" | "play" | "compute" | "let" | "for" | "in" | "to" | "mouse"
+            | "display" | "render" | "play" | "compute" | "let" | "out" | "for" | "in" | "to" | "mouse"
 
     number = numCore space*
     numCore = digit+ "." digit* expPart?    -- d1
@@ -170,6 +171,12 @@ const semantics = grammar.createSemantics()
 
   LetBinding(_kw, name, _eq, expr) {
     return new LetBinding(name.toAST(), expr.toAST());
+  },
+
+  OutputAssignment(_out, name, _eq, expr) {
+    const assignment = new Assignment(name.toAST(), '=', expr.toAST());
+    assignment.isOutput = true;
+    return assignment;
   },
 
   InstanceBinding_direct(name, _sp1, outputs, _sp2, _eq, _sp3, expr) {

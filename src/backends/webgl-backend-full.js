@@ -690,7 +690,7 @@ ${glslCode.join('\n')}
           'bpm', () => 'u_bpm',
           'beat', () => 'u_beat',
           'measure', () => 'u_measure',
-          _, () => '0.0'
+          _, (n) => '0.0'
         );
       },
 
@@ -715,7 +715,7 @@ ${glslCode.join('\n')}
           '>=', () => `(${leftCode} >= ${rightCode} ? 1.0 : 0.0)`,
           'AND', () => `(${leftCode} > 0.0 && ${rightCode} > 0.0 ? 1.0 : 0.0)`,
           'OR', () => `(${leftCode} > 0.0 || ${rightCode} > 0.0 ? 1.0 : 0.0)`,
-          _, () => '0.0'
+          _, (n) => '0.0'
         );
       },
 
@@ -724,7 +724,7 @@ ${glslCode.join('\n')}
         return match(op,
           '-', () => `(-${arg})`,
           'NOT', () => `(${arg} > 0.0 ? 0.0 : 1.0)`,
-          _, () => {
+          _, (n) => {
             const mathFn = this.getMathFunction(op);
             return mathFn ? `${mathFn}(${arg})` : `(-${arg})`;
           }
@@ -761,7 +761,7 @@ ${glslCode.join('\n')}
             'bpm', () => 'u_bpm',
             'beat', () => 'u_beat',
             'measure', () => 'u_measure',
-            _, () => '0.0'
+            _, (n) => '0.0'
           );
         }
         if (env.instances && env.instances.has(baseName)) {
@@ -803,7 +803,7 @@ ${glslCode.join('\n')}
         return `${baseCode}.x`;
       },
 
-      _, () => {
+      _, (n) => {
         // Fallback to plain object handling
         if (node && typeof node === 'object' && node.type) {
           return this.compileObjectToGLSL(node, env, instanceOutputs, localScope);
@@ -839,7 +839,7 @@ ${glslCode.join('\n')}
           'bpm', () => 'u_bpm',
           'beat', () => 'u_beat',
           'measure', () => 'u_measure',
-          _, () => '0.0'
+          _, (n) => '0.0'
         );
 
       case 'Mouse':
@@ -863,7 +863,7 @@ ${glslCode.join('\n')}
           '-', () => `(${left} - ${right})`,
           '*', () => `(${left} * ${right})`,
           '/', () => `(${left} / max(${right}, 0.000001))`,
-          _, () => '0.0'
+          _, (n) => '0.0'
         );
 
       case 'Call':
@@ -876,6 +876,14 @@ ${glslCode.join('\n')}
   }
 
   compileFunctionCall(name, argCodes) {
+    // Check for user-defined spindles first
+    if (this.env.spindles.has(name)) {
+      const spindleDef = this.env.spindles.get(name);
+      if (this.canCompileSpindleToGLSL(spindleDef)) {
+        return `spindle_${name}(${argCodes.join(', ')})`;
+      }
+    }
+
     const mathFn = this.getMathFunction(name);
     if (mathFn) {
       return `${mathFn}(${argCodes.join(', ')})`;
@@ -932,7 +940,7 @@ ${glslCode.join('\n')}
       'cross', () => argCodes.length >= 4
         ? `(${argCodes[0]} * ${argCodes[3]} - ${argCodes[1]} * ${argCodes[2]})`
         : '0.0',
-      _, () => '0.0'
+      _, (n) => '0.0'
     );
   }
 
@@ -959,7 +967,7 @@ ${glslCode.join('\n')}
 
     // Check each statement in spindle body
     for (const stmt of spindleDef.body.body) {
-      if (stmt.type !== 'Let' && stmt.type !== 'Assign') {
+      if (stmt.type !== 'Let' && stmt.type !== 'LetBinding' && stmt.type !== 'Assign' && stmt.type !== 'Assignment') {
         return false;
       }
 
@@ -1016,8 +1024,8 @@ ${glslCode.join('\n')}
 
   generateSpindleGLSL(spindleDef, paramMap = {}) {
     const functionName = `spindle_${spindleDef.name}`;
-    let params = Array.isArray(spindleDef.params) ? spindleDef.params : [];
-    const outputs = spindleDef.outs;
+    let params = Array.isArray(spindleDef.inputs) ? spindleDef.inputs : (Array.isArray(spindleDef.params) ? spindleDef.params : []);
+    const outputs = spindleDef.outputs || spindleDef.outs || [];
 
     // Flatten params if nested
     if (params.length === 1 && Array.isArray(params[0])) {
@@ -1038,16 +1046,21 @@ ${glslCode.join('\n')}
       }
 
       for (const stmt of spindleDef.body.body) {
-        if (stmt.type === 'Let') {
+        if (stmt.type === 'Let' || stmt.type === 'LetBinding') {
           const glslExpr = this.compileToGLSL(stmt.expr, this.env, {}, localParamMap);
           functionBody += `    float ${stmt.name} = ${glslExpr};\n`;
           localParamMap[stmt.name] = stmt.name;
-        } else if (stmt.type === 'Assign' && stmt.name === outputVar) {
+        } else if ((stmt.type === 'Assign' || stmt.type === 'Assignment') && stmt.isOutput && stmt.name === outputVar) {
           const glslExpr = this.compileToGLSL(stmt.expr, this.env, {}, localParamMap);
           if (stmt.op === '=') {
             functionBody += `    return ${glslExpr};\n`;
             outputAssigned = true;
           }
+        } else if ((stmt.type === 'Assign' || stmt.type === 'Assignment') && !stmt.isOutput) {
+          // Local variable assignment
+          const glslExpr = this.compileToGLSL(stmt.expr, this.env, {}, localParamMap);
+          functionBody += `    float ${stmt.name} = ${glslExpr};\n`;
+          localParamMap[stmt.name] = stmt.name;
         }
       }
 
@@ -1072,16 +1085,21 @@ ${glslCode.join('\n')}
       }
 
       for (const stmt of spindleDef.body.body) {
-        if (stmt.type === 'Let') {
+        if (stmt.type === 'Let' || stmt.type === 'LetBinding') {
           const glslExpr = this.compileToGLSL(stmt.expr, this.env, {}, localParamMap);
           functionBody += `    float ${stmt.name} = ${glslExpr};\n`;
           localParamMap[stmt.name] = stmt.name;
-        } else if (stmt.type === 'Assign' && stmt.name === outputVar) {
+        } else if ((stmt.type === 'Assign' || stmt.type === 'Assignment') && stmt.isOutput && stmt.name === outputVar) {
           const glslExpr = this.compileToGLSL(stmt.expr, this.env, {}, localParamMap);
           if (stmt.op === '=') {
             functionBody += `    return ${glslExpr};\n`;
             outputAssigned = true;
           }
+        } else if ((stmt.type === 'Assign' || stmt.type === 'Assignment') && !stmt.isOutput) {
+          // Local variable assignment
+          const glslExpr = this.compileToGLSL(stmt.expr, this.env, {}, localParamMap);
+          functionBody += `    float ${stmt.name} = ${glslExpr};\n`;
+          localParamMap[stmt.name] = stmt.name;
         }
       }
 
@@ -1144,7 +1162,7 @@ ${glslCode.join('\n')}
   compileUserSpindleToGLSL(stmt, spindleDef, glslCode, instanceOutputs) {
     const spindleName = stmt.callee;
     const args = stmt.args;
-    const outputs = spindleDef.outs;
+    const outputs = spindleDef.outputs || spindleDef.outs || [];
 
     const compiledArgs = args.map(arg => this.compileToGLSL(arg, this.env, instanceOutputs, {}));
 

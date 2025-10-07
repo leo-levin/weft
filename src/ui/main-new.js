@@ -542,6 +542,34 @@ playPauseBtn.addEventListener('click', () => {
 // Run button
 runBtn.addEventListener('click', runCode);
 
+// Load standard library
+let standardLibraryLoaded = false;
+async function loadStandardLibrary() {
+  if (standardLibraryLoaded) return;
+
+  try {
+    const response = await fetch('./standard.weft');
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    const stdlibCode = await response.text();
+    const stdlibAst = parse(stdlibCode);
+
+    // Register standard library spindles
+    for (const stmt of stdlibAst.statements) {
+      if (stmt.type === 'SpindleDef') {
+        env.spindles.set(stmt.name, stmt);
+        logger.debug('Main', `Loaded stdlib spindle: ${stmt.name}`);
+      }
+    }
+
+    standardLibraryLoaded = true;
+    logger.info('Main', `Loaded ${env.spindles.size} spindles from standard library`);
+  } catch (error) {
+    logger.error('Main', `Failed to load standard library: ${error.message}`);
+  }
+}
+
 // Main execution function
 async function runCode() {
   errorsEl.textContent = '';
@@ -554,13 +582,27 @@ async function runCode() {
     initializeBackends();
   }
 
+  // Load standard library (temporarily disabled)
+  // await loadStandardLibrary();
+
   try {
     const src = editor.getValue();
     logger.info('Parser', `Parsing ${src.length} characters`);
 
     // Parse WEFT code
     const ast = parse(src);
+    if (!ast || !ast.statements) {
+      throw new Error('Parser returned invalid AST');
+    }
     logger.info('Parser', `AST parsed: ${ast.statements.length} statements`);
+
+    // Register user-defined spindles
+    for (const stmt of ast.statements) {
+      if (stmt.type === 'SpindleDef') {
+        env.spindles.set(stmt.name, stmt);
+        logger.info('Main', `Registered user spindle: ${stmt.name}`);
+      }
+    }
 
     // Reset manual resize flag before processing
     env.manualResize = false;
@@ -616,7 +658,9 @@ async function runCode() {
     const compileSuccess = await coordinator.compile();
 
     if (!compileSuccess) {
-      throw new Error('Backend compilation failed');
+      const error = 'Backend compilation failed - check console for details';
+      logger.error('Compiler', error);
+      throw new Error(error);
     }
 
     logger.info('Compiler', 'Compilation successful');
