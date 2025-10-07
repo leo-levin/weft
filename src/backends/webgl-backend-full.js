@@ -6,7 +6,7 @@ import {
   BinaryExpr, UnaryExpr, IfExpr, CallExpr,
   StrandAccessExpr, StrandRemapExpr, VarExpr,
   TupleExpr, IndexExpr
-} from '../ast/ast-node.js';
+} from '../lang/ast-node.js';
 
 export class WebGLBackend extends BaseBackend {
   constructor(env, name, context) {

@@ -8,7 +8,7 @@ import {
   StrandAccessExpr,
   StrandRemapExpr,
   IfExpr,
-} from "../ast/ast-node.js";
+} from "../lang/ast-node.js";
 
 import { match, _, inst } from "../utils/match.js";
 
