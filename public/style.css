@@ -341,6 +341,16 @@ html, body {
   text-align: left;
   padding: 8px 12px;
   margin: 2px 0;
+  color: var(--ink);
+}
+
+#settingsMenu a {
+  text-decoration: none;
+  display: block;
+}
+
+#settingsMenu a button {
+  width: 100%;
 }
 
 /* Clean button styling - no borders or backgrounds */
