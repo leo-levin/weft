@@ -3,6 +3,7 @@ import { ASTNode, BinaryExpr, UnaryExpr, CallExpr, VarExpr, NumExpr, StrExpr,
   LetBinding, Assignment, NamedArg, DisplayStmt, RenderStmt, PlayStmt, ComputeStmt,
   SpindleDef, InstanceBinding, Program
 } from './ast-node.js';
+import { match, _, inst } from '../utils/match.js';
 
 const ohm = window.ohm;
 
@@ -117,6 +118,38 @@ const grammar = ohm.grammar(`
   }
   `);
 
+function expandInstancesInExpr(node, index) {
+  if (!node) return node;
+
+  return match(node,
+    inst(VarExpr, _), (name) =>
+      new StrandAccessExpr(new VarExpr(name), index),
+    inst(BinaryExpr, _, _, _), (op, left, right) =>
+      new BinaryExpr(
+        op,
+        expandInstancesInExpr(left, index),
+        expandInstancesInExpr(right, index)
+      ),
+    inst(UnaryExpr, _, _), (op, expr) =>
+      new UnaryExpr(
+        op,
+        expandInstancesInExpr(expr, index)
+      ),
+    inst(CallExpr, _, _), (name, args) =>
+      new CallExpr(
+        name,
+        args.map(arg => expandInstancesInExpr(arg, index))
+      ),
+    inst(IfExpr, _, _, _), (condition, thenExpr, elseExpr) =>
+      new IfExpr(
+        expandInstancesInExpr(condition, index),
+        expandInstancesInExpr(thenExpr, index),
+        expandInstancesInExpr(elseExpr, index)
+      ),
+    _, (n) => n
+  );
+}
+
 const semantics = grammar.createSemantics()
   .addOperation('toAST', {
     // Handle iteration nodes (*, +, ?)
@@ -195,7 +228,12 @@ const semantics = grammar.createSemantics()
       return outputList.map((out, i) =>
         new InstanceBinding(instName, [out], exprs[i]));
     }
-    return outputList.map(out => new InstanceBinding(instName, [out], exprAST));
+
+    // For multi-output directs, expand potential instances component-wise
+    return outputList.map((out, i) => {
+      const expandedExpr = expandInstancesInExpr(exprAST, i);
+      return new InstanceBinding(instName, [out], expandedExpr);
+    });
   },
 
   InstanceBinding_call(func, _lp, args, _rp, _dc, inst, outputs) {

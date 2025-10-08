@@ -58,13 +58,14 @@ export class RenderGraph {
     }
   }
 
-  resolveInNode(node) {
+  resolveInNode(node, parent = null, key = null) {
     if (!node) return;
 
     // Handle StrandAccessExpr with numeric indices
     if (node.type === 'StrandAccess' && typeof node.out === 'number') {
       const instance = this.env.instances.get(node.base.name);
       if (instance) {
+        // It's an instance - resolve numeric index to strand name
         const strandNames = Object.keys(instance.outs);
         const actualName = strandNames[node.out];
         if (actualName) {
@@ -75,17 +76,46 @@ export class RenderGraph {
           );
         }
       } else {
-        throw new Error(
-          `Instance '${node.base.name}' not found when resolving numeric strand index`
-        );
+        // It's a scalar variable - unwrap the StrandAccessExpr to just the VarExpr
+        // Replace this node with its base in the parent
+        if (parent && key !== null) {
+          if (Array.isArray(parent[key])) {
+            const index = parent[key].indexOf(node);
+            if (index !== -1) {
+              parent[key][index] = node.base;
+            }
+          } else {
+            parent[key] = node.base;
+          }
+        }
+        return; // Don't recurse into this node since we replaced it
       }
     }
 
     // Recursively resolve in all children
     if (node.getChildren) {
       const children = node.getChildren();
-      for (const child of children) {
-        this.resolveInNode(child);
+
+      // For expressions, we need to update the actual properties
+      if (node.type === 'Bin') {
+        this.resolveInNode(node.left, node, 'left');
+        this.resolveInNode(node.right, node, 'right');
+      } else if (node.type === 'Unary') {
+        this.resolveInNode(node.expr, node, 'expr');
+      } else if (node.type === 'Call') {
+        this.resolveInNode(node.name, node, 'name');
+        node.args.forEach((arg, i) => this.resolveInNode(arg, node.args, i));
+      } else if (node.type === 'If') {
+        this.resolveInNode(node.condition, node, 'condition');
+        this.resolveInNode(node.thenExpr, node, 'thenExpr');
+        this.resolveInNode(node.elseExpr, node, 'elseExpr');
+      } else if (node.type === 'InstanceBinding') {
+        this.resolveInNode(node.expr, node, 'expr');
+      } else {
+        // Generic recursion for other node types
+        for (const child of children) {
+          this.resolveInNode(child);
+        }
       }
     }
   }
