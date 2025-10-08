@@ -1,0 +1,204 @@
+/* CodeMirror Syntax Highlighting for WEFT */
+/*
+ * HOW THIS WORKS:
+ * 1. mode-weft.js tokenizes your code and returns strings like "keyword", "variable", etc.
+ * 2. CodeMirror adds "cm-" prefix to make CSS classes: .cm-keyword, .cm-variable, etc.
+ * 3. You style those classes below!
+ *
+ * QUICK REFERENCE - What returns what token:
+ * "keyword"    → spindle, if, then, else, display
+ * "atom"       → out, in
+ * "builtin"    → me, mouse
+ * "spin-name"  → spindle names (my_circle in definition)
+ * "params"     → parameters in spindle signature
+ * "callee"     → function calls (my_circle when you call it)
+ * "outs"       → output names in <result> spec
+ * "strands"    → strand names in <r,g,b> or the "r" in inst@r
+ * "bundles"    → instance names (circs in ::circs)
+ * "tag"        → variable name after 'out' keyword
+ * "variable"   → variable references
+ * "variable-2" → local variable definitions (dx = ...)
+ * "operator"   → + - * / == << >> :: etc.
+ * "operator-2" → ~
+ * "operator-3" → @
+ * "math"       → sin, cos, sqrt, etc.
+ * "count"      → <3> in multi-call syntax
+ * "outs-bracket"    → <> around ::<result>
+ * "strands-bracket" → <> around ::inst<r,g,b>
+ * "tuple-bracket"   → <> around foo(<0.1,0.2,0.3>)
+ * "number", "string", "comment" → literals and comments
+ */
+/*
+#000080 - Headers
+#4EC9B0 - Types, classes, namespaces, interfaces
+#4FC1FF - Constants, enum members
+#569CD6 - Keywords, control flow, storage types, language constants, tags, preprocessors, variable language keywords
+#646695 - Regular expression constants
+#6796E6 - Markdown list punctuation, info tokens
+#6A9955 - Comments, markdown quote punctuation
+#808080 - Tag punctuation/delimiters
+#9CDCFE - Variables, parameters, attributes, property names, object keys
+#B267E6 - Debug tokens
+#B5CEA8 - Numbers, numeric constants, units, markup insertions
+#C586C0 - Control keywords (special), operators like new/delete
+#C8C8C8 - Labels
+#CD9731 - Warning tokens
+#CE9178 - Strings, markup deleted text, property values
+#D16969 - Regular expression strings, regex character classes
+#D4D4D4 - Default text/foreground, operators, embedded code
+#D7BA7D - CSS/LESS selectors, regex quantifiers, escape characters
+#DCDCAA - Functions, methods, regex operators
+#F44747 - Invalid/error code, error tokens
+*/
+
+#editorContainer .cm-keyword {
+  color: #C586C0; /* Pink */
+  font-weight: 500;
+}
+
+#editorContainer .cm-atom {
+  color: #C586C0; /* Red */
+  font-weight: 500;
+}
+
+#editorContainer .cm-builtin {
+  color: #569CD6; /* Cyan */
+  font-weight: 500;
+}
+
+#editorContainer .cm-variable {
+  color: #9CDCFE; /* White */
+}
+
+#editorContainer .cm-variable-2 {
+  color: #9CDCFE; /* Teal */
+  font-weight: 500;
+}
+
+#editorContainer .cm-spin-name {
+  color: #4EC9B0; /* Green */
+  font-weight: 500;
+}
+
+#editorContainer .cm-params {
+  color: #9CDCFE; /* Light green */
+  font-weight: 500;
+}
+
+#editorContainer .cm-callee {
+  color: #4EC9B0; /* Orange */
+  font-weight: 500;
+}
+
+#editorContainer .cm-outs {
+  color: #9CDCFE; /* Yellow */
+  font-weight: 500;
+}
+
+#editorContainer .cm-strands {
+  color: #A1CFEE; /* Coral */
+  font-weight: 500;
+}
+
+#editorContainer .cm-bundles {
+  color: #679AD1; /* Purple */
+  font-weight: 500;
+}
+
+#editorContainer .cm-tag {
+  color: #9CDCFE; /* Bright cyan */
+  font-weight: 500;
+}
+
+#editorContainer .cm-math {
+  color: #DCDCAF; /* Magenta */
+  font-weight: 500;
+}
+
+#editorContainer .cm-count {
+  color: #6b9d93; /* Bright orange */
+  font-weight: 500;
+}
+
+/* Operator highlighting */
+#editorContainer .cm-operator {
+  color: #D4D4D4; /* Pink */
+}
+
+#editorContainer .cm-operator-2 {
+  color: #ff4444; /* Bright red */
+  font-weight: 500;
+}
+
+#editorContainer .cm-operator-3 {
+  color: #4FC1FF; /* Lime green */
+  font-weight: 500;
+}
+
+/* Special bracket types */
+#editorContainer .cm-outs-bracket {
+  color: #679AD1; /* Bright yellow for output spec brackets */
+  font-weight: 600;
+}
+
+#editorContainer .cm-strands-bracket {
+  color: #A1CFEE; /* Bright magenta for strand map brackets */
+  font-weight: 600;
+}
+
+#editorContainer .cm-tuple-bracket {
+  color: #E8CB49; /* Bright cyan for tuple literal brackets */
+  font-weight: 500;
+}
+
+/* Legacy token classes (kept for compatibility) */
+#editorContainer .cm-strand-access {
+  color: #9CDCFE; /* Green for @ operator */
+  font-weight: 500;
+}
+
+#editorContainer .cm-instance-binding {
+  color: #4FC1FF; /* Orange for :: operator */
+  font-weight: 500;
+}
+
+#editorContainer .cm-remap {
+  color: #8be9fd; /* Cyan for ~ operator */
+  font-weight: 500;
+}
+
+#editorContainer .cm-number {
+  color: #DCDCB4; /* Purple for numbers */
+}
+
+#editorContainer .cm-string {
+  color: #F3FA9A; /* Yellow for strings */
+}
+
+#editorContainer .cm-comment {
+  color: #6272a4; /* Muted blue-gray for comments */
+  font-style: italic;
+}
+
+#editorContainer .cm-bracket {
+  color: #E8CB49; /* Default for brackets */
+}
+
+#editorContainer .cm-punctuation {
+  color: #f8f8f2; /* Default for punctuation */
+}
+
+#editorContainer .cm-meta {
+  color: #ffb86c; /* Orange for pragmas */
+  font-weight: 500;
+}
+
+
+
+/* Interactive highlighting (for hover, error marks, etc.) */
+#editorContainer .cm-strand-access:hover,
+#editorContainer .cm-instance-binding:hover {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}

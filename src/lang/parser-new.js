@@ -115,6 +115,39 @@ const grammar = ohm.grammar(`
     space += lineComment | blockComment
     lineComment = "//" (~"\\n" any)*
     blockComment = "/*" (~"*/" any)* "*/"
+
+    tokens = (pragma | keyword | specialIdent | ident | number | string | comment | strandOp | instanceOp | operator | bracket | punctuation | any)*
+
+    // Comments
+    comment = lineComment | blockComment
+
+    // Pragmas
+    pragma = "#" pragmaType
+
+    // Special identifiers that deserve their own highlighting
+    specialIdent = (("me" | "mouse") ~identRest) space*
+
+    // Operators - ordered from most specific to least specific
+    strandOp = sym<"@">          // Strand access operator
+    instanceOp = sym<"::">        // Instance binding operator
+    remapOp = sym<"~">           // Axis remapping operator
+
+    operator = sym<"==="> | sym<"=="> | sym<"!=">          // Comparison
+             | sym<"<<="> | sym<">>="> | sym<"<<"> | sym<">>">  // Bit shift (if used)
+             | sym<"+="> | sym<"-="> | sym<"*="> | sym<"/=">    // Assignment operators
+             | sym<"^">                                         // Power operator
+             | sym<"+"> | sym<"-"> | sym<"*"> | sym<"/"> | sym<"%">  // Arithmetic
+             | sym<"<="> | sym<">="> | sym<"<"> | sym<">">      // Comparison
+             | sym<"=">                                         // Assignment
+
+    // Brackets
+    bracket = sym<"("> | sym<")">
+            | sym<"["> | sym<"]">
+            | sym<"{"> | sym<"}">
+            | sym<"<"> | sym<">">  // Also used in output specs and bundles
+
+    // Punctuation
+    punctuation = sym<","> | sym<";">
   }
   `);
 
@@ -491,7 +524,132 @@ const semantics = grammar.createSemantics()
   PrimaryExpr(node) {
     return node.toAST();
   }
+})
+.addOperation('syntaxHighlight', {
+  // Main tokens rule
+  tokens(iter) {
+    return iter.children.map(c => c.syntaxHighlight()).join('');
+  },
+
+  // Iteration nodes
+  _iter(...children) {
+    return children.map(c => c.syntaxHighlight()).join('');
+  },
+
+  // Terminal nodes
+  _terminal() {
+    return this.sourceString;
+  },
+
+  // Pragmas
+  pragma(_hash, type) {
+    const text = this.sourceString;
+    return `<span class="weft-pragma">${escapeHtml(text)}</span>`;
+  },
+
+  // Keywords
+  keyword(_) {
+    const text = this.sourceString;
+    return `<span class="weft-keyword">${escapeHtml(text)}</span>`;
+  },
+
+  // Special identifiers (me, mouse)
+  specialIdent(word, _space) {
+    const text = this.sourceString;
+    return `<span class="weft-special-ident">${escapeHtml(text)}</span>`;
+  },
+
+  // Identifiers
+  ident(letter, rest, _space) {
+    const text = this.sourceString;
+    return `<span class="weft-ident">${escapeHtml(text)}</span>`;
+  },
+
+  // Numbers
+  number(_digits, _space) {
+    const text = this.sourceString;
+    return `<span class="weft-number">${escapeHtml(text)}</span>`;
+  },
+
+  // Strings
+  string(_q1, chars, _q2, _space) {
+    const text = this.sourceString;
+    return `<span class="weft-string">${escapeHtml(text)}</span>`;
+  },
+
+  // Comments
+  comment(c) {
+    const text = this.sourceString;
+    return `<span class="weft-comment">${escapeHtml(text)}</span>`;
+  },
+
+  lineComment(_slash, _rest) {
+    const text = this.sourceString;
+    return `<span class="weft-comment">${escapeHtml(text)}</span>`;
+  },
+
+  blockComment(_open, _content, _close) {
+    const text = this.sourceString;
+    return `<span class="weft-comment">${escapeHtml(text)}</span>`;
+  },
+
+  // Strand access operator (@)
+  strandOp(_at) {
+    const text = this.sourceString;
+    return `<span class="weft-strand-access">${escapeHtml(text)}</span>`;
+  },
+
+  // Instance binding operator (::)
+  instanceOp(_colon) {
+    const text = this.sourceString;
+    return `<span class="weft-instance-binding">${escapeHtml(text)}</span>`;
+  },
+
+  // Remap operator (~)
+  remapOp(_tilde) {
+    const text = this.sourceString;
+    return `<span class="weft-remap">${escapeHtml(text)}</span>`;
+  },
+
+  // Generic operators
+  operator(op) {
+    const text = this.sourceString;
+    return `<span class="weft-operator">${escapeHtml(text)}</span>`;
+  },
+
+  // Brackets
+  bracket(b) {
+    const text = this.sourceString;
+    return `<span class="weft-bracket">${escapeHtml(text)}</span>`;
+  },
+
+  // Punctuation
+  punctuation(p) {
+    const text = this.sourceString;
+    return `<span class="weft-punctuation">${escapeHtml(text)}</span>`;
+  },
+
+  // Pragma types
+  pragmaType(_) {
+    const text = this.sourceString;
+    return `<span class="weft-pragma">${escapeHtml(text)}</span>`;
+  },
+
+  // Default for any other node
+  _nonterminal(...children) {
+    return children.map(c => c.syntaxHighlight()).join('');
+  }
 });
+
+// Helper function to escape HTML
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 export class Parser {
   parse(source) {
@@ -501,8 +659,22 @@ export class Parser {
     }
     return semantics(match).toAST();
   }
+
+  // Generate syntax-highlighted HTML from source code
+  static highlightSyntax(source) {
+    const match = grammar.match(source, 'tokens');
+    if (match.failed()) {
+      // If matching fails, return escaped source
+      return escapeHtml(source);
+    }
+    return semantics(match).syntaxHighlight();
+  }
 }
 
 export function parse(source) {
   return new Parser().parse(source);
+}
+
+export function highlightSyntax(source) {
+  return Parser.highlightSyntax(source);
 }
