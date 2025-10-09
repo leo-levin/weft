@@ -122,30 +122,30 @@
 /* Operator highlighting */
 #editorContainer .cm-operator {
   color: #D4D4D4; /* Pink */
-  font-weight: 600;
+  font-weight: 700;
 }
 
 #editorContainer .cm-operator-2 {
-  color: #B267E6; /* Bright red */
-  font-weight: 1000;
+  color: #D4D4D4; /* Bright red */
+  font-weight: 700;
 
 }
 
 #editorContainer .cm-operator-3 {
   color: #9CDCFE; /* Lime green */
-  font-weight: 1000;
+  font-weight: 700;
 
 }
 
 /* Special bracket types */
 #editorContainer .cm-outs-bracket {
   color: #4Fc1FF; /* Bright yellow for output spec brackets */
-  font-weight: 600;
+  font-weight: 500;
 }
 
 #editorContainer .cm-strands-bracket {
   color: #4Fc1FF; /* Bright magenta for strand map brackets */
-  font-weight: 600;
+  font-weight: 500;
 }
 
 #editorContainer .cm-tuple-bracket {
@@ -156,6 +156,7 @@
 /* Legacy token classes (kept for compatibility) */
 #editorContainer .cm-strand-access {
   color: #9CDCFE; /* Green for @ operator */
+  font-weight: 100;
 
 }
 
@@ -171,7 +172,7 @@
 
 #editorContainer .cm-number {
   color: #DCDCB4; /* Purple for numbers */
-  font-weight: 550;
+  font-weight: 600;
 }
 
 #editorContainer .cm-string {
