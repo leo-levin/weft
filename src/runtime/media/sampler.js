@@ -12,7 +12,7 @@ export class Sampler {
     this.kind="none"; this.ready=false; this.width=1; this.height=1; this.video=null; this.image=null;
     this.off = document.createElement('canvas');
     this.offCtx = this.off.getContext('2d', { willReadFrequently: true, alpha: false });
-    this.pixels=null; this.path = null; this.lastUpdate = 0;
+    this.pixels=null; this.path = null; this.lastUpdate = 0; this.stream=null;
   }
 
   static preloadImage(path) {
@@ -132,6 +132,66 @@ export class Sampler {
     this.fallbackPattern();
   }
 
+  // Load camera stream
+  // TODO: Add camera selection support (device ID, front/back, etc.)
+  async loadCamera() {
+    logger.info('Sampler', 'Requesting camera access');
+
+    try {
+      // Request camera access with basic constraints
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+
+      this.kind = "camera";
+      this.stream = stream;
+      this.video = document.createElement('video');
+      this.video.srcObject = stream;
+      this.video.muted = true;
+      this.video.playsInline = true;
+      this.video.autoplay = true;
+
+      this.video.addEventListener('loadedmetadata', () => {
+        this.width = this.video.videoWidth || 640;
+        this.height = this.video.videoHeight || 480;
+        this.off.width = this.width;
+        this.off.height = this.height;
+        this.ready = true;
+        logger.info('Sampler', `Camera loaded: ${this.width}x${this.height}`);
+      });
+
+      this.video.addEventListener('error', (e) => {
+        logger.error('Sampler', 'Camera stream error', e);
+        this.stopCamera();
+        this.fallbackPattern();
+      });
+
+      // Start playing the video
+      try {
+        await this.video.play();
+      } catch (e) {
+        logger.warn('Sampler', 'Camera autoplay failed, will play on user interaction', e);
+      }
+
+    } catch (error) {
+      logger.error('Sampler', `Camera access denied or failed: ${error.message}`);
+      this.fallbackPattern();
+    }
+  }
+
+  // Stop camera stream and release resources
+  stopCamera() {
+    if (this.stream) {
+      this.stream.getTracks().forEach(track => track.stop());
+      this.stream = null;
+      logger.info('Sampler', 'Camera stream stopped');
+    }
+  }
+
   processImage() {
     // Use requestIdleCallback for non-blocking image processing
     const processNow = () => {
@@ -156,8 +216,8 @@ export class Sampler {
   }
   play(){ if(this.video){ try{ this.video.play(); }catch{} } }
   updateFrame(){
-    if(this.kind==="video" && this.ready){
-      // Throttle video updates for performance
+    if((this.kind==="video" || this.kind==="camera") && this.ready){
+      // Throttle video/camera updates for performance
       const now = performance.now();
       if (now - this.lastUpdate > 16.67) { // ~60fps max
         this.offCtx.drawImage(this.video,0,0,this.width,this.height);

@@ -113,6 +113,13 @@ export class Env {
     return sampler;
   }
 
+  async loadCamera(instanceName) {
+    const sampler = new Sampler();
+    await sampler.loadCamera();
+    this.media.set(instanceName, sampler);
+    return sampler;
+  }
+
   getMedia(instanceName) {
     return this.media.get(instanceName);
   }

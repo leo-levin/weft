@@ -13,27 +13,50 @@ export class MediaManager {
   }
 
   /**
-   * Process load statements and set up media access
+   * Process load and camera statements and set up media access
    * @param {Array} statements - AST statements
    * @returns {Promise}
    */
   async processLoadStatements(statements) {
     for (const stmt of statements) {
+      // Handle InstanceBinding with Call expressions (new parser format)
+      if (stmt.type === 'InstanceBinding' && stmt.expr?.type === 'Call') {
+        if (stmt.expr.name === 'load') {
+          const mediaPath = stmt.expr.args[0]?.value; // NumExpr/StrExpr have .value
+          if (mediaPath) {
+            await this.loadMedia(mediaPath, stmt.name, stmt.outputs);
+          }
+        }
+
+        if (stmt.expr.name === 'camera') {
+          await this.loadCamera(stmt.name, stmt.outputs);
+        }
+      }
+
+      // Handle old CallInstance format for backwards compatibility
       if (stmt.type === 'CallInstance' && stmt.callee === 'load') {
         const mediaPath = stmt.args[0]?.v;
         if (mediaPath) {
           await this.loadMedia(mediaPath, stmt.inst, stmt.outs);
         }
       }
+
+      if (stmt.type === 'CallInstance' && stmt.callee === 'camera') {
+        await this.loadCamera(stmt.inst, stmt.outs);
+      }
     }
 
-    // Also check for Direct statements that might be load calls
+    // Also check for Direct statements that might be load/camera calls
     for (const stmt of statements) {
       if (stmt.type === 'Direct' && stmt.expr?.type === 'Call' && stmt.expr.name === 'load') {
         const mediaPath = stmt.expr.args[0]?.v;
         if (mediaPath) {
           await this.loadMedia(mediaPath, stmt.inst, stmt.outs);
         }
+      }
+
+      if (stmt.type === 'Direct' && stmt.expr?.type === 'Call' && stmt.expr.name === 'camera') {
+        await this.loadCamera(stmt.inst, stmt.outs);
       }
     }
   }
@@ -67,6 +90,38 @@ export class MediaManager {
       return sampler;
     } catch (error) {
       logger.error(this.backendType, `Failed to load media ${path}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Load camera stream and create sampler
+   * @param {string} instName - Instance name
+   * @param {Array} outputs - Output specifications
+   */
+  async loadCamera(instName, outputs) {
+    try {
+      // Get or create sampler
+      const instance = this.env.instances.get(instName);
+      let sampler = instance?.sampler;
+
+      if (!sampler) {
+        const { Sampler } = await import('../runtime/media/sampler.js');
+        sampler = new Sampler();
+        await sampler.loadCamera();
+
+        // Store in environment
+        if (instance) {
+          instance.sampler = sampler;
+        }
+      }
+
+      this.loadedMedia.set(instName, sampler);
+
+      logger.debug(this.backendType, `Loaded camera as ${instName}`);
+      return sampler;
+    } catch (error) {
+      logger.error(this.backendType, `Failed to load camera:`, error);
       return null;
     }
   }

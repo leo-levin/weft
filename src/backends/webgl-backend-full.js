@@ -548,6 +548,37 @@ ${glslCode.join('\n')}
       return;
     }
 
+    // Handle InstanceBinding with camera() - map outputs positionally to RGBA
+    if (stmt.type === 'InstanceBinding' && stmt.expr && stmt.expr.type === 'Call' && stmt.expr.name === 'camera') {
+      const textureInfo = this.loadCameraTexture(stmt.name);
+      if (!textureInfo) {
+        this.warn(`Failed to load camera, skipping: ${stmt.name}`);
+        return;
+      }
+
+      // Compile texture coordinates from arguments, or use v_texCoord if no args
+      let texCoordX = 'v_texCoord.x';
+      let texCoordY = 'v_texCoord.y';
+
+      if (stmt.expr.args && stmt.expr.args.length >= 2) {
+        texCoordX = this.compileToGLSL(stmt.expr.args[0], this.env, instanceOutputs, globalScope);
+        texCoordY = this.compileToGLSL(stmt.expr.args[1], this.env, instanceOutputs, globalScope);
+      }
+
+      // Map outputs positionally: first output -> .r, second -> .g, third -> .b, fourth -> .a
+      const components = ['.r', '.g', '.b', '.a'];
+      for (let i = 0; i < stmt.outputs.length; i++) {
+        const outputName = stmt.outputs[i];
+        const varName = `${stmt.name}_${outputName}`;
+        const component = components[Math.min(i, 3)];
+
+        glslCode.push(`        float ${varName} = texture2D(${textureInfo.uniformName}, vec2(${texCoordX}, ${texCoordY}))${component};`);
+        instanceOutputs[`${stmt.name}@${outputName}`] = varName;
+        globalScope[varName] = varName;
+      }
+      return;
+    }
+
     // Handle InstanceBinding with StrandRemapExpr
     if (stmt.type === 'InstanceBinding' && stmt.expr && stmt.expr.type === 'StrandRemap') {
       for (const outputName of stmt.outputs) {
@@ -658,8 +689,46 @@ ${glslCode.join('\n')}
         }
       }
     }
-    else if (stmt.type === 'CallInstance' && stmt.callee !== 'load') {
+    else if (stmt.type === 'CallInstance' && stmt.callee === 'camera') {
+      // Handle camera with postfix syntax: camera(x, y)::cam<r, g, b>
+      const textureInfo = this.loadCameraTexture(stmt.inst);
+      if (!textureInfo) {
+        this.warn(`Failed to load camera, skipping: ${stmt.inst}`);
+        return;
+      }
+
+      // Compile texture coordinates from arguments, or use v_texCoord if no args
+      let texCoordX = 'v_texCoord.x';
+      let texCoordY = 'v_texCoord.y';
+
+      if (stmt.args && stmt.args.length >= 2) {
+        texCoordX = this.compileToGLSL(stmt.args[0], this.env, instanceOutputs, globalScope);
+        texCoordY = this.compileToGLSL(stmt.args[1], this.env, instanceOutputs, globalScope);
+      }
+
+      for (const output of stmt.outs) {
+        const outName = typeof output === 'string' ? output : (output.name || output.alias);
+        const varName = `${stmt.inst}_${outName}`;
+
+        // Map output names to texture components more flexibly
+        let component = '.r'; // default
+        if (outName === 'r' || outName === 'red') component = '.r';
+        else if (outName === 'g' || outName === 'green') component = '.g';
+        else if (outName === 'b' || outName === 'blue') component = '.b';
+        else if (outName === 'a' || outName === 'alpha') component = '.a';
+        else {
+          // For arbitrary names, use position-based mapping
+          const outputIndex = stmt.outs.indexOf(output);
+          component = ['.r', '.g', '.b', '.a'][Math.min(outputIndex, 3)];
+        }
+
+        glslCode.push(`        float ${varName} = texture2D(${textureInfo.uniformName}, vec2(${texCoordX}, ${texCoordY}))${component};`);
+        instanceOutputs[`${stmt.inst}@${outName}`] = varName;
+      }
+    }
+    else if (stmt.type === 'CallInstance' && stmt.callee !== 'load' && stmt.callee !== 'camera') {
       // Handle general spindle calls
+      console.log('[WebGL] Processing CallInstance:', stmt.callee, 'inst:', stmt.inst);
       this.compileSpindleToGLSL(stmt, glslCode, instanceOutputs);
     }
   }
@@ -962,20 +1031,24 @@ ${glslCode.join('\n')}
 
   canCompileSpindleToGLSL(spindleDef) {
     if (!spindleDef || !spindleDef.body || !spindleDef.body.body) {
+      console.log('[WebGL] Spindle cannot compile: missing body');
       return false;
     }
 
     // Check each statement in spindle body
     for (const stmt of spindleDef.body.body) {
       if (stmt.type !== 'Let' && stmt.type !== 'LetBinding' && stmt.type !== 'Assign' && stmt.type !== 'Assignment') {
+        console.log('[WebGL] Spindle cannot compile: unsupported statement type:', stmt.type);
         return false;
       }
 
       if (!this.canCompileExpressionToGLSL(stmt.expr)) {
+        console.log('[WebGL] Spindle cannot compile: expression not supported:', stmt.expr);
         return false;
       }
     }
 
+    console.log('[WebGL] Spindle CAN compile to GLSL:', spindleDef.name);
     return true;
   }
 
@@ -1015,7 +1088,12 @@ ${glslCode.join('\n')}
         return expr.args.every(arg => this.canCompileExpressionToGLSL(arg));
 
       case 'StrandAccess':
-        return false; // Can't access strands in spindle functions
+        // Allow me@ and mouse@ since they're environment variables
+        const baseName = expr.base?.name || expr.base;
+        if (baseName === 'me' || baseName === 'mouse') {
+          return true;
+        }
+        return false; // Can't access other strands in spindle functions
 
       default:
         return false;
@@ -1164,7 +1242,10 @@ ${glslCode.join('\n')}
     const args = stmt.args;
     const outputs = spindleDef.outputs || spindleDef.outs || [];
 
+    console.log('[WebGL] Compiling user spindle:', spindleName, 'args:', args, 'outputs:', outputs);
+
     const compiledArgs = args.map(arg => this.compileToGLSL(arg, this.env, instanceOutputs, {}));
+    console.log('[WebGL] Compiled args:', compiledArgs);
 
     if (outputs.length === 1) {
       const functionName = `spindle_${spindleName}`;
@@ -1174,6 +1255,7 @@ ${glslCode.join('\n')}
         const varName = `${stmt.inst}_${outName}`;
         const functionCall = `${functionName}(${compiledArgs.join(', ')})`;
 
+        console.log('[WebGL] Generated GLSL:', `float ${varName} = ${functionCall};`);
         glslCode.push(`        float ${varName} = ${functionCall};`);
         instanceOutputs[`${stmt.inst}@${outName}`] = varName;
       }
@@ -1422,6 +1504,67 @@ ${glslCode.join('\n')}
       }
     };
     document.addEventListener('click', playOnInteraction, { once: true });
+
+    const textureInfo = {
+      texture,
+      unit: textureUnit,
+      uniformName: `u_texture${textureUnit}`,
+      loaded: false,
+      isVideo: true,
+      videoElement: video
+    };
+
+    this.textures.set(instName, textureInfo);
+    return textureInfo;
+  }
+
+  loadCameraTexture(instName) {
+    console.log('[WebGL] loadCameraTexture called for:', instName);
+    if (this.textures.has(instName)) {
+      console.log('[WebGL] Texture already exists, returning cached version');
+      return this.textures.get(instName);
+    }
+
+    const gl = this.gl;
+    const texture = gl.createTexture();
+    const textureUnit = this.textureCounter++;
+    console.log('[WebGL] Created texture unit:', textureUnit);
+
+    gl.activeTexture(gl.TEXTURE0 + textureUnit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+
+    // Placeholder while loading
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  new Uint8Array([128, 128, 128, 255]));
+
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+
+    // Request camera access
+    navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    }).then(stream => {
+      video.srcObject = stream;
+
+      video.addEventListener('loadedmetadata', () => {
+        video.play().then(() => {
+          gl.activeTexture(gl.TEXTURE0 + textureUnit);
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          this.log(`Camera loaded successfully on unit ${textureUnit}`);
+        }).catch(err => {
+          this.error('Failed to play camera stream:', err);
+        });
+      });
+    }).catch(err => {
+      this.error('Failed to access camera:', err);
+    });
 
     const textureInfo = {
       texture,

@@ -619,6 +619,70 @@ const BuiltinSpindles = {
     return inst;
   },
 
+  camera: (env, args, instName, outs) => {
+    logger.info('Builtin', `Loading camera for instance '${instName}'`, { outs });
+
+    const sampler = new Sampler();
+    sampler.loadCamera(); // Start async, don't block
+    env.defaultSampler = sampler; // Set as default sampler (will update when camera loads)
+
+    const instanceOuts = {};
+
+    // Get component values function - use me.x/me.y directly for strand remap support
+    const getComponent = (index, me, env) => {
+      const x = me.x;
+      const y = me.y;
+      return (env.defaultSampler||sampler).sample(x, y)[index] || 0;
+    };
+
+    // Map outputs based on their names or positions
+    for (let i = 0; i < outs.length; i++) {
+      const outName = typeof outs[i] === 'string' ? outs[i] : (outs[i].name || outs[i].alias);
+
+      // Handle metadata strands
+      if (outName === 'w' || outName === 'width') {
+        instanceOuts[outName] = {
+          kind: 'strand',
+          evalAt: (_me, _env) => sampler.width || 0
+        };
+        logger.debug('Builtin', `Mapped output '${outName}' to width metadata`);
+        continue;
+      } else if (outName === 'h' || outName === 'height') {
+        instanceOuts[outName] = {
+          kind: 'strand',
+          evalAt: (_me, _env) => sampler.height || 0
+        };
+        logger.debug('Builtin', `Mapped output '${outName}' to height metadata`);
+        continue;
+      }
+
+      // Map based on common color channel names
+      let componentIndex = 0; // default to red
+      if (outName === 'r' || outName === 'red') componentIndex = 0;
+      else if (outName === 'g' || outName === 'green') componentIndex = 1;
+      else if (outName === 'b' || outName === 'blue') componentIndex = 2;
+      else if (outName === 'a' || outName === 'alpha') componentIndex = 3;
+      else {
+        // For any other name, use position-based mapping (r,g,b,a in order)
+        componentIndex = Math.min(i, 3);
+      }
+
+      instanceOuts[outName] = {
+        kind: 'strand',
+        evalAt: (me, env) => getComponent(componentIndex, me, env)
+      };
+
+      logger.debug('Builtin', `Mapped camera output '${outName}' to component ${componentIndex}`);
+    }
+
+    const inst = makeSimpleInstance(instName, instanceOuts);
+    inst.sampler = sampler; // Store sampler reference
+
+    env.instances.set(instName, inst);
+    logger.updateInstanceViewer(env.instances);
+    return inst;
+  },
+
   sample: (env, args, instName, outs) => {
     // sample(imageInstance, x, y) - sample a specific loaded image at custom coordinates
     const imageInstanceName = (args[0] && args[0].type === "Var") ? args[0].name : null;

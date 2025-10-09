@@ -264,7 +264,7 @@ const semantics = grammar.createSemantics()
 
     // For multi-output directs, expand potential instances component-wise
     return outputList.map((out, i) => {
-      const expandedExpr = expandInstancesInExpr(exprAST, i);
+      const expandedExpr = expandInstancesInExpr(exprAST, out);
       return new InstanceBinding(instName, [out], expandedExpr);
     });
   },
@@ -301,7 +301,7 @@ const semantics = grammar.createSemantics()
 
       if (arg.type === 'Var') {
         return Array.from({length: count}, (_, i) =>
-          new StrandAccessExpr(arg, i)
+          new StrandAccessExpr(arg, outputList[i])
         );
       }
       return Array(count).fill(arg);

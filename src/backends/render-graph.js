@@ -123,7 +123,7 @@ export class RenderGraph {
   determineType(stmt) {
     if (stmt.expr.type === "Call") {
       const callName = stmt.expr.name;
-      if (callName === "load") return "builtin";
+      if (callName === "load" || callName === "camera") return "builtin";
       if (this.env.spindles.has(callName)) return "spindle";
       return "call";
     }
