@@ -52,7 +52,6 @@ export class RenderGraph {
   }
 
   resolveNumericStrandIndices() {
-    // Walk the entire AST and resolve numeric strand indices to actual names
     for (const stmt of this.ast.statements) {
       this.resolveInNode(stmt);
     }
@@ -61,23 +60,19 @@ export class RenderGraph {
   resolveInNode(node, parent = null, key = null) {
     if (!node) return;
 
-    // Handle StrandAccessExpr with numeric indices
     if (node.type === 'StrandAccess' && typeof node.out === 'number') {
       const instance = this.env.instances.get(node.base.name);
       if (instance) {
-        // It's an instance - resolve numeric index to strand name
         const strandNames = Object.keys(instance.outs);
         const actualName = strandNames[node.out];
         if (actualName) {
-          node.out = actualName; // Mutate AST to replace number with string
+          node.out = actualName;
         } else {
           throw new Error(
             `Strand index ${node.out} out of bounds for instance '${node.base.name}' (has ${strandNames.length} strands)`
           );
         }
       } else {
-        // It's a scalar variable - unwrap the StrandAccessExpr to just the VarExpr
-        // Replace this node with its base in the parent
         if (parent && key !== null) {
           if (Array.isArray(parent[key])) {
             const index = parent[key].indexOf(node);
@@ -92,11 +87,9 @@ export class RenderGraph {
       }
     }
 
-    // Recursively resolve in all children
     if (node.getChildren) {
       const children = node.getChildren();
 
-      // For expressions, we need to update the actual properties
       if (node.type === 'Bin') {
         this.resolveInNode(node.left, node, 'left');
         this.resolveInNode(node.right, node, 'right');
@@ -112,7 +105,6 @@ export class RenderGraph {
       } else if (node.type === 'InstanceBinding') {
         this.resolveInNode(node.expr, node, 'expr');
       } else {
-        // Generic recursion for other node types
         for (const child of children) {
           this.resolveInNode(child);
         }
@@ -321,11 +313,11 @@ export class RenderGraph {
       }
     }
 
-    if (this.execOrder.length !== this.nodes.size) { 
+    if (this.execOrder.length !== this.nodes.size) {
       throw new Error("Circular dependency in render graph!");
     }
   }
-  
+
   tagContexts(outputStmts) {
     // Tag instances with contexts based on output statements
     for (const stmt of outputStmts) {

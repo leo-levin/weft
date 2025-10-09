@@ -1,4 +1,4 @@
-import { Sampler } from './media/sampler.js';
+import { Sampler } from './sampler.js';
 import { parse } from '../lang/parser-new.js';
 import { match, _ } from '../utils/match.js';
 import { RenderGraph } from '../backends/render-graph.js';

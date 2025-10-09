@@ -1,34 +1,6 @@
-// AST Node Classes for WEFT
-// Base class and specific node types for the WEFT AST
-
 class ASTNode {
   constructor(type) {
     this.type = type;
-    this.routes = new Set();        // execution routes that need this node
-    this.primaryRoute = null;       // primary execution route
-    this.dependencies = new Set();  // nodes this depends on
-    this.crossContext = false;      // crosses multiple execution contexts
-    this.id = ASTNode.generateId(); // unique identifier
-  }
-
-  static generateId() {
-    return `node_${ASTNode._counter++}`;
-  }
-
-  addRoute(route) {
-    this.routes.add(route);
-  }
-
-  setPrimaryRoute(route) {
-    this.primaryRoute = route;
-  }
-
-  addDependency(node) {
-    this.dependencies.add(node);
-  }
-
-  markCrossContext() {
-    this.crossContext = true;
   }
 
   // Abstract method - should be overridden by subclasses
@@ -36,7 +8,6 @@ class ASTNode {
     return [];
   }
 
-  // Traverse all child nodes
   traverse(callback) {
     callback(this);
     this.getChildren().forEach(child => {
@@ -47,9 +18,6 @@ class ASTNode {
   }
 }
 
-ASTNode._counter = 1;
-
-// Expression nodes
 class BinaryExpr extends ASTNode {
   constructor(op, left, right) {
     super('Bin');
@@ -224,7 +192,7 @@ class StrandAccessExpr extends ASTNode {
 class StrandRemapExpr extends ASTNode {
   constructor(base, strand, mappings) {
     super('StrandRemap');
-    this.base = base;           // VarExpr for instance (e.g., VarExpr('img'))
+    this.base = base;
     this.strand = strand;       // Strand name string (e.g., 'r')
     this.mappings = mappings;   // Array of {axis: 'x', expr: ...} objects
   }
@@ -306,7 +274,6 @@ class NamedArg extends ASTNode {
   }
 }
 
-// Base class for all output statements (render, play, compute, display)
 class OutputStatement extends ASTNode {
   constructor(statementType, args) {
     super(statementType);
@@ -315,9 +282,6 @@ class OutputStatement extends ASTNode {
     this.positionalArgs = [];
     this.parameters = {};
     this.parseArgs(args);
-
-    // Determine execution route based on statement type
-    this.route = this.determineRoute();
   }
 
   getChildren() {
@@ -338,46 +302,8 @@ class OutputStatement extends ASTNode {
       }
     });
   }
-
-  determineRoute() {
-    switch (this.type) {
-      case 'RenderStmt': return 'gpu';
-      case 'PlayStmt': return 'audio';
-      case 'ComputeStmt': return 'cpu';
-      case 'DisplayStmt': return this.determineLegacyRoute();
-      default: return 'cpu';
-    }
-  }
-
-  determineLegacyRoute() {
-    const params = this.parameters;
-
-    // GPU route indicators - visual rendering parameters
-    if (params.r || params.g || params.b || params.rgb ||
-        params.width || params.height || params.fps) {
-      return 'gpu';
-    }
-
-    // Audio route indicators - audio synthesis parameters
-    if (params.audio || params.left || params.right ||
-        params.rate || params.channels) {
-      return 'audio';
-    }
-
-    // Default based on positional args (legacy support)
-    if (this.positionalArgs.length >= 3) {
-      return 'gpu';  // Assume r,g,b positional arguments
-    }
-
-    if (this.positionalArgs.length === 1) {
-      return 'audio';  // Assume single audio expression
-    }
-
-    return 'cpu';  // Default fallback
-  }
 }
 
-// Convenience constructors for specific statement types
 class DisplayStmt extends OutputStatement {
   constructor(args) { super('DisplayStmt', args); }
 }
@@ -444,7 +370,6 @@ class Program extends ASTNode {
   }
 }
 
-// Export all classes using ES6 modules
 export {
   ASTNode,
   BinaryExpr,

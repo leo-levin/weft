@@ -1,7 +1,7 @@
 // builtins-math.js — Mathematical built-in functions
 
-import { clamp } from '../../utils/math.js';
-import { noise3 } from '../../utils/noise.js';
+import { clamp } from '../utils/math.js';
+import { noise3 } from '../utils/noise.js';
 import { RuntimeError } from '../core/errors.js';
 
 export const Builtins = {

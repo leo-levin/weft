@@ -1,7 +1,7 @@
 import { Parser } from '../lang/parser.js';
 import { tagExpressionRoutes } from '../lang/tagging.js';
 import { Env, Executor } from '../runtime/runtime.js';
-import { Sampler } from '../runtime/media/sampler.js';
+import { Sampler } from '../runtime/sampler.js';
 import { clamp, isNum } from '../utils/math.js';
 import { logger } from '../utils/logger.js';
 import { Renderer } from '../renderers/renderer.js';

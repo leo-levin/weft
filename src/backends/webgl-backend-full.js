@@ -401,20 +401,17 @@ export class WebGLBackend extends BaseBackend {
       }
       this.log('Using render statement with named arguments');
     } else if (this.displayStatement.args && this.displayStatement.args.length === 1) {
-      // Single argument - try to get first 3 outputs from the instance
       const arg = this.displayStatement.args[0];
       if (arg.type === 'Var') {
         const instName = arg.name;
         const availableOutputs = Object.keys(instanceOutputs).filter(key => key.startsWith(instName + '@'));
 
         if (availableOutputs.length >= 3) {
-          // Use first 3 outputs for RGB
           const [r, g, b] = availableOutputs.slice(0, 3);
           rCode = instanceOutputs[r] || '0.0';
           gCode = instanceOutputs[g] || '0.0';
           bCode = instanceOutputs[b] || '0.0';
         } else if (availableOutputs.length === 1) {
-          // Single output - use as grayscale
           const singleOut = instanceOutputs[availableOutputs[0]];
           rCode = gCode = bCode = singleOut;
         }

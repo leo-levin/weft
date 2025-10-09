@@ -1,7 +1,7 @@
 // sampler.js — Media sampling and caching for images, videos, and audio
 
-import { clamp } from '../../utils/math.js';
-import { logger } from '../../utils/logger.js';
+import { clamp } from '../utils/math.js';
+import { logger } from '../utils/logger.js';
 
 // Global image cache for performance
 const imageCache = new Map();
