@@ -171,6 +171,7 @@
 
 #editorContainer .cm-number {
   color: #DCDCB4; /* Purple for numbers */
+  font-weight: 550;
 }
 
 #editorContainer .cm-string {
