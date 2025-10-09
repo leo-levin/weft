@@ -407,9 +407,27 @@
         const currentPos = stream.pos;
         const peekChar = stream.peek();
 
-        if (peekChar === "(" || peekChar === "<") {
+        if (peekChar === "(") {
           stream.pos = savedPos; // Restore position
           return "callee"; // Function/spindle call
+        }
+
+        // If followed by <, need to check if it's multi-call <3> or bundle strand map <r>
+        if (peekChar === "<") {
+          stream.next(); // consume <
+          stream.eatSpace();
+          const insideChar = stream.peek();
+
+          // If it's a digit, it's multi-call syntax like foo<3>(...), so it's a callee
+          if (/\d/.test(insideChar)) {
+            stream.pos = savedPos; // Restore position
+            return "callee";
+          }
+
+          // Otherwise it's a bundle with strand map like circs<r> or circs2<r,g,b>
+          stream.pos = savedPos; // Restore position
+          state.bundleNames[word] = true; // Track as bundle name
+          return "bundles";
         }
 
         // Check if this is a variable definition (followed by =)

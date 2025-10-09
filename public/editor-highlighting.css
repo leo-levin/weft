@@ -53,17 +53,17 @@
 
 #editorContainer .cm-keyword {
   color: #C586C0; /* Pink */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-atom {
   color: #C586C0; /* Red */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-builtin {
-  color: #569CD6; /* Cyan */
-  font-weight: 500;
+  color: #4Fc1FF; /* Cyan */
+
 }
 
 #editorContainer .cm-variable {
@@ -72,99 +72,101 @@
 
 #editorContainer .cm-variable-2 {
   color: #9CDCFE; /* Teal */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-spin-name {
   color: #4EC9B0; /* Green */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-params {
   color: #9CDCFE; /* Light green */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-callee {
   color: #4EC9B0; /* Orange */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-outs {
   color: #9CDCFE; /* Yellow */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-strands {
-  color: #A1CFEE; /* Coral */
-  font-weight: 500;
+  color: #9CDCFE; /* Coral */
 }
 
 #editorContainer .cm-bundles {
-  color: #679AD1; /* Purple */
-  font-weight: 500;
+  color: #4Fc1FF; /* Purple */
+
 }
 
 #editorContainer .cm-tag {
   color: #9CDCFE; /* Bright cyan */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-math {
   color: #DCDCAF; /* Magenta */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-count {
   color: #6b9d93; /* Bright orange */
-  font-weight: 500;
+
 }
 
 /* Operator highlighting */
 #editorContainer .cm-operator {
   color: #D4D4D4; /* Pink */
+  font-weight: 600;
 }
 
 #editorContainer .cm-operator-2 {
-  color: #C586C0; /* Bright red */
-  font-weight: 500;
+  color: #B267E6; /* Bright red */
+  font-weight: 1000;
+
 }
 
 #editorContainer .cm-operator-3 {
-  color: #4FC1FF; /* Lime green */
-  font-weight: 500;
+  color: #9CDCFE; /* Lime green */
+  font-weight: 1000;
+
 }
 
 /* Special bracket types */
 #editorContainer .cm-outs-bracket {
-  color: #679AD1; /* Bright yellow for output spec brackets */
+  color: #4Fc1FF; /* Bright yellow for output spec brackets */
   font-weight: 600;
 }
 
 #editorContainer .cm-strands-bracket {
-  color: #679AD1; /* Bright magenta for strand map brackets */
+  color: #4Fc1FF; /* Bright magenta for strand map brackets */
   font-weight: 600;
 }
 
 #editorContainer .cm-tuple-bracket {
   color: #E8CB49; /* Bright cyan for tuple literal brackets */
-  font-weight: 500;
+
 }
 
 /* Legacy token classes (kept for compatibility) */
 #editorContainer .cm-strand-access {
   color: #9CDCFE; /* Green for @ operator */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-instance-binding {
   color: #4FC1FF; /* Orange for :: operator */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-remap {
   color: #8be9fd; /* Cyan for ~ operator */
-  font-weight: 500;
+
 }
 
 #editorContainer .cm-number {
@@ -172,7 +174,7 @@
 }
 
 #editorContainer .cm-string {
-  color: #F3FA9A; /* Yellow for strings */
+  color: #CE9178; /* Yellow for strings */
 }
 
 #editorContainer .cm-comment {
@@ -190,7 +192,7 @@
 
 #editorContainer .cm-meta {
   color: #ffb86c; /* Orange for pragmas */
-  font-weight: 500;
+
 }
 
 
