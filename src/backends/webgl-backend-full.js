@@ -31,7 +31,6 @@ export class WebGLBackend extends BaseBackend {
 
   async compile(ast) {
     try {
-      // Initialize WebGL if needed
       if (!this.gl) {
         if (!this.initWebGL()) {
           throw new Error('Failed to initialize WebGL context');
@@ -39,7 +38,6 @@ export class WebGLBackend extends BaseBackend {
         this.setupQuadGeometry();
       }
 
-      // Find display statements
       const displayStmts = this.filterStatements(ast, 'DisplayStmt', 'RenderStmt');
 
       if (displayStmts.length === 0) {
@@ -59,9 +57,6 @@ export class WebGLBackend extends BaseBackend {
 
       this.log('Compilation successful');
 
-      // Store compiled shader for viewing
-      this.compiledShader = this.getCompiledShader();
-
       return true;
 
     } catch (error) {
@@ -71,16 +66,10 @@ export class WebGLBackend extends BaseBackend {
   }
 
   getCompiledCode() {
-    // Override BaseBackend method
     if (!this.lastCompiledFragmentShader) {
       return '// No fragment shader compiled yet';
     }
     return `// Fragment Shader (GLSL)\n\n${this.lastCompiledFragmentShader}`;
-  }
-
-  // Deprecated - kept for compatibility
-  getCompiledShader() {
-    return this.getCompiledCode();
   }
 
   render() {
@@ -103,7 +92,6 @@ export class WebGLBackend extends BaseBackend {
       this.gl.deleteBuffer(this.vertexBuffer);
       this.vertexBuffer = null;
     }
-    // Cleanup textures and videos
     for (const [, textureInfo] of this.textures) {
       if (textureInfo.texture) {
         this.gl.deleteTexture(textureInfo.texture);
@@ -119,10 +107,11 @@ export class WebGLBackend extends BaseBackend {
   }
 
   canGetValue() {
-    return false; // WebGL can't efficiently read back pixels
+    return false;
   }
 
-  // ===== WebGL Setup =====
+
+
 
   initWebGL() {
     // Try to get WebGL context
@@ -687,7 +676,6 @@ ${glslCode.join('\n')}
       }
     }
     else if (stmt.type === 'CallInstance' && stmt.callee === 'camera') {
-      // Handle camera with postfix syntax: camera(x, y)::cam<r, g, b>
       const textureInfo = this.loadCameraTexture(stmt.inst);
       if (!textureInfo) {
         this.warn(`Failed to load camera, skipping: ${stmt.inst}`);
@@ -707,7 +695,6 @@ ${glslCode.join('\n')}
         const outName = typeof output === 'string' ? output : (output.name || output.alias);
         const varName = `${stmt.inst}_${outName}`;
 
-        // Map output names to texture components more flexibly
         let component = '.r'; // default
         if (outName === 'r' || outName === 'red') component = '.r';
         else if (outName === 'g' || outName === 'green') component = '.g';
@@ -1429,9 +1416,73 @@ ${glslCode.join('\n')}
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
                   new Uint8Array([128, 128, 128, 255]));
 
+    // Check if Sampler already loaded this image (dual-storage)
+    let instance = this.env.instances?.get(instName);
+    let sampler = instance?.sampler;
+
+    // If no instance exists yet, create one
+    if (!instance) {
+      instance = {
+        name: instName,
+        kind: 'instance',
+        outs: {}
+      };
+      if (!this.env.instances) {
+        this.env.instances = new Map();
+      }
+      this.env.instances.set(instName, instance);
+    }
+
+    if (sampler && sampler.image && sampler.ready) {
+      // Reuse existing image from Sampler
+      this.log(`Using existing Sampler image for GPU texture: ${url}`);
+      gl.activeTexture(gl.TEXTURE0 + textureUnit);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sampler.image);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+      // Store GPU texture reference in Sampler
+      sampler.gpuTexture = texture;
+      sampler.textureUnit = textureUnit;
+
+      const textureInfo = {
+        texture,
+        unit: textureUnit,
+        uniformName: `u_texture${textureUnit}`,
+        loaded: true
+      };
+
+      this.textures.set(instName, textureInfo);
+      return textureInfo;
+    }
+
+    // Load new image and create Sampler for CPU access
     const image = new Image();
     image.crossOrigin = 'anonymous';
-    image.onload = () => {
+
+    // Dynamically import Sampler (lazy load)
+    const createSamplerForImage = async (img) => {
+      const { Sampler } = await import('../runtime/sampler.js');
+      const newSampler = new Sampler();
+      newSampler.kind = 'image';
+      newSampler.image = img;
+      newSampler.width = img.width;
+      newSampler.height = img.height;
+      newSampler.off.width = img.width;
+      newSampler.off.height = img.height;
+      newSampler.processImage();
+
+      // Store GPU texture reference
+      newSampler.gpuTexture = texture;
+      newSampler.textureUnit = textureUnit;
+
+      return newSampler;
+    };
+
+    image.onload = async () => {
       gl.activeTexture(gl.TEXTURE0 + textureUnit);
       gl.bindTexture(gl.TEXTURE_2D, texture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
@@ -1440,6 +1491,21 @@ ${glslCode.join('\n')}
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       this.log(`Loaded texture: ${url} on unit ${textureUnit}`);
+
+      // Create Sampler for CPU access (for cross-context usage)
+      if (!sampler) {
+        try {
+          sampler = await createSamplerForImage(image);
+          instance.sampler = sampler;
+          this.log(`Created Sampler for CPU access: ${url}`);
+        } catch (error) {
+          this.error(`Failed to create Sampler:`, error);
+        }
+      } else {
+        // Store GPU texture reference in existing Sampler
+        sampler.gpuTexture = texture;
+        sampler.textureUnit = textureUnit;
+      }
     };
     image.onerror = () => {
       this.error(`Failed to load texture: ${url}`);

@@ -1,0 +1,29 @@
+// Cross-context Image Test
+// Tests dual-storage: GPU rendering + CPU sampling for audio
+
+// Load an image (replace with actual image path)
+// img = load("path/to/image.jpg")
+
+// For testing without an image, use computed values instead:
+test_r<r> = sin(me@x * 3) * 0.5 + 0.5
+test_g<g> = cos(me@y * 3) * 0.5 + 0.5
+test_b<b> = sin(me@time * 2) * 0.5 + 0.5
+
+// Compute brightness from RGB (luminance formula)
+// If using actual image: brightness<val> = img@r * 0.299 + img@g * 0.587 + img@b * 0.114
+brightness<val> = test_r@r * 0.299 + test_g@g * 0.587 + test_b@b * 0.114
+
+// Use brightness to modulate audio frequency (200-800 Hz range)
+audio_freq<hz> = brightness@val * 600 + 200
+
+// Play audio modulated by visual brightness
+play(sin(me@time * audio_freq@hz * 6.283185) * 0.3)
+
+// Display the brightness value visually
+display(brightness@val, brightness@val, brightness@val)
+
+// Expected behavior:
+// - Visual shows grayscale brightness
+// - Audio frequency changes with brightness (brighter = higher pitch)
+// - Both contexts use the same brightness computation
+// - Demonstrates CPU sampling of visual values for audio

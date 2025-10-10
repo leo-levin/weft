@@ -1,0 +1,4 @@
+// Simplest possible audio test
+// Should produce a constant tone
+
+play(0.1)  // Constant value 0.1 (quiet tone)

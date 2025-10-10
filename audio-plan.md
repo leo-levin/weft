@@ -327,32 +327,6 @@ play(oscillator)
 - `threshold()` - could work for audio (gate/clipper)
 - Math functions (sin, cos, etc.) - definitely needed
 
-**Audio-specific functions to add**:
-
-```weft
-// Oscillators
-spindle sine(freq, phase) :: <output>
-spindle saw(freq) :: <output>
-spindle square(freq, duty) :: <output>
-spindle triangle(freq) :: <output>
-
-// Effects
-spindle lowpass(input, cutoff, resonance) :: <output>
-spindle delay(input, time) :: <output>
-spindle envelope(attack, decay, sustain, release) :: <output>
-
-// Utilities
-spindle mix(a, b, amount) :: <output>
-spindle clamp(input, min, max) :: <output>
-```
-
-**Concern**: Some of these require state (delay buffers, filter state). How do we handle stateful audio?
-
-**Proposed solution**:
-
-- Phase 1: Stateless functions only (oscillators with explicit phase param)
-- Phase 2: Add stateful processing with explicit state management
-
 ---
 
 ### 10. Performance Targets
@@ -433,17 +407,6 @@ spindle clamp(input, min, max) :: <output>
 9. **Sample rate**: Fixed at 48kHz, or support 44.1kHz, 96kHz, etc.?
 
 10. **Latency tuning**: Should buffer size be configurable? Trade latency for stability?
-
----
-
-## Next Steps
-
-1. **Resolve open questions** - Get alignment on key design decisions
-2. **Create file structure** - Set up skeleton files
-3. **Implement Phase 1 MVP** - Basic audio output with no cross-context
-4. **Test and iterate** - Get basic audio working before adding complexity
-5. **Add cross-context** - Phase 2 implementation
-6. **Polish and document** - Phase 3-4 when core is stable
 
 ---
 

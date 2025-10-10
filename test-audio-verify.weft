@@ -1,0 +1,8 @@
+// Correct 440Hz sine wave test
+// me@time should be in seconds, so * 440 * 2π gives 440 cycles per second
+
+// This should produce a clean 440Hz tone (A4 note)
+play(sin(me@time * 440 * 6.283185307))
+
+// Visual feedback
+display(me@x, me@y, sin(me@time * 3))

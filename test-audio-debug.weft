@@ -1,0 +1,16 @@
+// Audio Debug Test - Multiple test patterns
+
+// Test 1: Constant DC offset (should produce a click when starting/stopping)
+// play(0.5)
+
+// Test 2: Very simple sine wave at 440Hz (A4 note)
+play(sin(me@time * 440 * 6.283185))
+
+// Test 3: Sawtooth wave (should be buzzy)
+// play((me@time * 220) % 1.0 - 0.5)
+
+// Test 4: Square wave (even buzzier)
+// play(if(sin(me@time * 220 * 6.283185) > 0, 0.5, -0.5))
+
+// Visual feedback to show the program is running
+display(me@x, me@y, sin(me@time))

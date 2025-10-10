@@ -1,0 +1,8 @@
+// Audio Backend Test - Simple Sine Wave
+// Should produce a 440 Hz sine tone (A4 note)
+
+// Test 1: Simple sine wave
+play(sin(me@time * 440 * 6.28))
+
+// Also display something visual so we know both backends work
+display(me@x, me@y, sin(me@time))

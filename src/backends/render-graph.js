@@ -186,7 +186,7 @@ export class RenderGraph {
         }
       },
       inst(IndexExpr, _, _),
-      (base, index) => {
+      (base, dindex) => {
         this.markRequiredInExpr(base);
         this.markRequiredInExpr(index);
       },
@@ -319,21 +319,12 @@ export class RenderGraph {
   }
 
   tagContexts(outputStmts) {
-    // Tag instances with contexts based on output statements
     for (const stmt of outputStmts) {
       const context = this.getStmtContext(stmt);
       if (!context) continue;
 
       for (const expr of stmt.args) {
         this.tagDepsInExpr(expr, context, this.nodes);
-      }
-    }
-
-    // Log tagging results
-    console.log('[RenderGraph] Context tagging complete:');
-    for (const [name, node] of this.nodes) {
-      if (node.contexts.size > 0) {
-        console.log(`  ${name}: ${Array.from(node.contexts).join(', ')}`);
       }
     }
   }

@@ -99,13 +99,41 @@ function compileToJS(node, env) {
     inst(VarExpr, _), (name) => `env.getVar("${name}")`,
     inst(StrandAccessExpr, _, _), (base, out) => {
       const baseName = base.name;
+
+      // Check if this is an image instance with a sampler (dual-storage support)
+      const instance = env.instances?.get(baseName);
+      if (instance && instance.sampler) {
+        // Map output name to RGBA channel index
+        const channelMap = { r: 0, g: 1, b: 2, a: 3, red: 0, green: 1, blue: 2, alpha: 3 };
+        const channelIndex = channelMap[out];
+
+        if (channelIndex !== undefined) {
+          // Sample from image using bilinear interpolation
+          // Add safety check for sampler readiness
+          return `(env.instances.get("${baseName}")?.sampler?.ready ? env.instances.get("${baseName}").sampler.sample(x, y, true)[${channelIndex}] : 0)`;
+        }
+      }
+
+      // Fall back to coordinator for non-image instances
       return `env.coordinator.getValue("${baseName}","${out}",me)`;
     },
     inst(StrandRemapExpr, _, _, _), (base, strand, mappings) => {
       const baseName = base.name;
       const coordPairs = mappings.map(m => {
-        const axisCode = compileToJS(m.expr, env);
-        return `${m.axis}:${axisCode}`;
+        // Extract axis from source (e.g., me@x → 'x')
+        let axis;
+        if (m.source.type === 'Me') {
+          axis = m.source.field;
+        } else if (m.source.type === 'StrandAccess' && m.source.base.name === 'me') {
+          axis = m.source.output;
+        } else {
+          console.warn('[CPUEvaluator] StrandRemap source must be me@field, got:', m.source);
+          axis = 'x';
+        }
+
+        // Compile target expression
+        const targetCode = compileToJS(m.target, env);
+        return `${axis}:${targetCode}`;
       });
       const coordObj = `{...me,${coordPairs.join(',')}}`;
       return `env.coordinator.getValue("${baseName}","${strand}",${coordObj})`;
@@ -131,27 +159,29 @@ function getMathFunction(name) {
 export function compile(node, env) {
   const jsCode = compileToJS(node, env);
   const funcBody = `
-    const x = me.x;
-    const y = me.y;
-    const t = me.time;
-    const f = me.frame;
-    const w = me.width;
-    const h = me.height;
-    const fps = me.fps;
-    const loop = me.loop;
-    const bpm = me.bpm;
-    const beat = me.beat;
-    const measure = me.measure;
-    const abstime = me.abstime;
-    const absframe = me.absframe;
+    const x = me.x || 0.5;
+    const y = me.y || 0.5;
+    const t = me.time || 0;
+    const f = me.frame || 0;
+    const w = me.width || env.resW || 1;
+    const h = me.height || env.resH || 1;
+    const fps = me.fps || env.targetFps || 60;
+    const loop = me.loop || env.loop || 1000;
+    const bpm = me.bpm || env.bpm || 120;
+    const beat = me.beat || 0;
+    const measure = me.measure || 0;
+    const abstime = me.abstime || 0;
+    const absframe = me.absframe || 0;
     const mx = env.mouse.x;
     const my = env.mouse.y;
     return (${jsCode});
   `;
 
   try {
-    return new Function('me', 'env', funcBody);
+    const fn = new Function('me', 'env', funcBody);
+    return fn;
   } catch (e) {
+    console.error('[CPUEvaluator] Compile error:', e, 'Code:', funcBody);
     return () => 0;
   }
 }
@@ -183,10 +213,22 @@ export class CPUEvaluator {
 
       fn = compile(expr, this.env);
       this.compiledFunctions.set(key, fn);
+
+      // Debug: show compiled code for first few evaluations
+      if (this.compiledFunctions.size <= 3) {
+        console.log(`[CPUEvaluator] Compiled ${key}:`, fn.toString());
+      }
     }
 
     try {
-      return fn(me, this.env);
+      const result = fn(me, this.env);
+
+      // Debug: log first few calls
+      if (this.env.frame < 3 && key === 'samp@x') {
+        console.log(`[CPUEvaluator] Evaluated ${key} with me=`, me, 'result=', result);
+      }
+
+      return result;
     } catch (e) {
       console.error(`[CPUEvaluator] Error evaluating ${key}:`, e);
       return 0;

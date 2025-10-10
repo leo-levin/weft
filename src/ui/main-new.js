@@ -3,6 +3,7 @@ import { parse } from '../lang/parser-new.js';
 import { Env } from '../runtime/runtime-new.js';
 import { Coordinator } from '../backends/coordinator.js';
 import { WebGLBackend } from '../backends/webgl-backend-full.js';
+import { AudioBackend } from '../backends/audio-backend.js';
 import { clamp } from '../utils/math.js';
 import { logger } from '../utils/logger.js';
 import { match, _ } from '../utils/match.js';
@@ -47,10 +48,14 @@ function initializeBackends() {
   // Create WebGL backend for visual context
   const webglBackend = new WebGLBackend(env, 'webgl', 'visual');
 
+  // Create Audio backend for audio context
+  const audioBackend = new AudioBackend(env, 'audio', 'audio');
+
   // Create coordinator and register backends
   coordinator = new Coordinator(null, env);
   coordinator.setBackends({
-    webgl: webglBackend
+    webgl: webglBackend,
+    audio: audioBackend
   });
 
   logger.info('Main', 'Backends initialized');
@@ -525,15 +530,15 @@ function setupEditorListeners() {
 
 // Play/pause button
 let isPlaying = false;
-playPauseBtn.addEventListener('click', () => {
+playPauseBtn.addEventListener('click', async () => {
   if (!coordinator) return;
 
   if (isPlaying) {
-    coordinator.stop();
+    await coordinator.stop();
     playPauseBtn.textContent = '▶';
     isPlaying = false;
   } else {
-    coordinator.start();
+    await coordinator.start();
     playPauseBtn.textContent = '⏸';
     isPlaying = true;
   }

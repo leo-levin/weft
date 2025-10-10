@@ -13,6 +13,10 @@ export class Sampler {
     this.off = document.createElement('canvas');
     this.offCtx = this.off.getContext('2d', { willReadFrequently: true, alpha: false });
     this.pixels=null; this.path = null; this.lastUpdate = 0; this.stream=null;
+
+    // GPU texture storage (for dual-storage with WebGL)
+    this.gpuTexture = null;
+    this.textureUnit = null;
   }
 
   static preloadImage(path) {
@@ -217,7 +221,6 @@ export class Sampler {
   play(){ if(this.video){ try{ this.video.play(); }catch{} } }
   updateFrame(){
     if((this.kind==="video" || this.kind==="camera") && this.ready){
-      // Throttle video/camera updates for performance
       const now = performance.now();
       if (now - this.lastUpdate > 16.67) { // ~60fps max
         this.offCtx.drawImage(this.video,0,0,this.width,this.height);
@@ -227,10 +230,16 @@ export class Sampler {
     }
   }
 
-  // Optimized sampling with bounds checking and bilinear interpolation option
   sample(nx, ny, interpolate = false){
     if(!this.ready || !this.pixels){
+      console.warn('[Sampler] Not ready or no pixels', { ready: this.ready, hasPixels: !!this.pixels });
       return [nx, ny, 0.5, 1];
+    }
+
+    // Debug NaN coordinates
+    if (isNaN(nx) || isNaN(ny)) {
+      console.error('[Sampler] Invalid coordinates:', { nx, ny });
+      return [0, 0, 0, 1];
     }
 
     if (interpolate) {

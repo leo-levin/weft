@@ -65,6 +65,8 @@ export class Coordinator {
     this.graph = new RenderGraph(this.ast, this.env);
     const graphResult = this.graph.build();
 
+    // Make coordinator available to CPUEvaluator
+    this.env.coordinator = this;
 
     this.cpuEvaluator = new CPUEvaluator(this.env, this.graph);
 
@@ -110,13 +112,20 @@ export class Coordinator {
     }
   }
 
-  start(){
+  async start(){
     if(this.running) return;
 
     this.running = true;
     this.lastFrameTime = performance.now();
-    this.mainLoop();
 
+    // Resume backends (e.g., AudioContext)
+    for (const backend of this.backends.values()) {
+      if (backend && backend.resume) {
+        await backend.resume();
+      }
+    }
+
+    this.mainLoop();
   }
 
   mainLoop() {
@@ -134,11 +143,18 @@ export class Coordinator {
     this.frameId = requestAnimationFrame(() => this.mainLoop());
   }
 
-  stop() {
+  async stop() {
     this.running = false;
     if (this.frameId) {
       cancelAnimationFrame(this.frameId);
       this.frameId = null;
+    }
+
+    // Pause backends (e.g., AudioContext)
+    for (const backend of this.backends.values()) {
+      if (backend && backend.pause) {
+        await backend.pause();
+      }
     }
   }
 
