@@ -52,8 +52,6 @@ pub struct StrandRemapExpr {
     pub strand: String,
     pub mappings: Vec<AxisMapping>,
 }
-
-#[derive(Clone)]
 pub struct AxisMapping {
     pub axis: String,
     pub expr: Box<ASTNode>,
@@ -65,7 +63,7 @@ pub struct IfExpr {
     pub else_expr: Box<ASTNode>,
 }
 
-pub struct Assignment {
+pub struct AssignmentExpr {
     pub name: String,
     pub op: String,
     pub expr: Box<ASTNode>,
@@ -89,7 +87,7 @@ pub struct SpindleDef {
     pub body: Box<ASTNode>,
 }
 
-pub struct InstanceBinding {
+pub struct InstanceBindExpr {
     pub name: String,
     pub outputs: Vec<String>,
     pub expr: Box<ASTNode>,
@@ -115,13 +113,13 @@ pub enum ASTNode {
     If(IfExpr),
 
     // Statements
-    Assignment(Assignment),
+    Assignment(AssignmentExpr),
     NamedArg(NamedArg),
     DisplayStmt(OutputStatement),
     RenderStmt(OutputStatement),
     PlayStmt(OutputStatement),
     ComputeStmt(OutputStatement),
     SpindleDef(SpindleDef),
-    InstanceBinding(InstanceBinding),
+    InstanceBinding(InstanceBindExpr),
     Program(Program),
 }

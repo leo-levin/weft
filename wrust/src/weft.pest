@@ -1,0 +1,175 @@
+// ============================================================================
+// WHITESPACE & COMMENTS
+// ============================================================================
+
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+
+COMMENT       = _{ line_comment | block_comment }
+line_comment  =  { "//" ~ (!"\n" ~ ANY)* }
+block_comment =  { "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// ============================================================================
+// PROGRAM STRUCTURE
+// ============================================================================
+
+program = { SOI ~ statement* ~ EOI }
+
+statement = {
+    pragma
+  | spindle_def
+  | env_assignment
+  | instance_binding
+  | assignment
+  | render_stmt
+  | play_stmt
+  | compute_stmt
+}
+
+// STATEMENTS
+pragma      = { "#" ~ ident ~ pragma_body }
+pragma_body = { (!"\n" ~ ANY)* ~ "\n"? }
+
+env_assignment = { "me" ~ "<" ~ ident ~ ">" ~ "=" ~ expr }
+
+spindle_def = {
+    "spindle" ~ ident ~ "(" ~ ident_list ~ ")" ~ "::" ~ output_spec ~ block
+}
+
+instance_binding = {
+    multi_spindle_call
+  | spindle_call
+  | direct_bind
+}
+
+multi_spindle_call = { ident ~ "<" ~ ASCII_DIGIT+ ~ ">" ~ "(" ~ bundle_or_expr_list ~ ")" ~ "::" ~ ident ~ output_spec }
+
+spindle_call = { ident ~ "(" ~ expr_list ~ ")" ~ "::" ~ ident ~ output_spec }
+direct_bind  = { ident ~ output_spec ~ "=" ~ expr }
+
+assignment = { ident ~ assign_op ~ expr }
+assign_op  = { "+=" | "-=" | "*=" | "/=" | "=" }
+
+render_stmt  = { "render" ~ "(" ~ stmt_arg_list ~ ")" }
+play_stmt    = { "play" ~ "(" ~ stmt_arg_list ~ ")" }
+compute_stmt = { "compute" ~ "(" ~ stmt_arg_list ~ ")" }
+
+stmt_arg_list = { (stmt_arg ~ ("," ~ stmt_arg)*)? }
+stmt_arg      = { ident ~ ":" ~ expr | expr }
+
+// BLOCKS
+block           = { "{" ~ block_statement* ~ "}" }
+block_statement = {
+    output_assignment
+  | assignment
+  | for_loop
+}
+
+output_assignment = { "out" ~ ident ~ "=" ~ expr }
+
+for_loop = {
+    "for" ~ ident ~ "in" ~ "(" ~ expr ~ "to" ~ expr ~ ")" ~ block
+}
+
+output_spec = { "<" ~ ident_list ~ ">" }
+
+// EXPRESSIONS
+expr = { if_expr | logical_expr }
+
+if_expr = { "if" ~ expr ~ "then" ~ expr ~ "else" ~ expr }
+
+// Logical operators
+logical_expr = { comparison_expr ~ (logical_op ~ comparison_expr)* }
+logical_op   = { "or" | "and" }
+
+// Comparison operators
+comparison_expr = { arith_expr ~ (cmp_op ~ arith_expr)? }
+cmp_op          = { "===" | "==" | "!=" | "<<=" | ">>=" | "<<" | ">>" }
+
+// Arithmetic
+arith_expr = { term ~ (add_op ~ term)* }
+add_op     = { "+" | "-" }
+
+term   = { factor ~ (mul_op ~ factor)* }
+mul_op = { "*" | "/" | "%" }
+
+factor = { power }
+
+power = { unary ~ ("^" ~ power)? }
+
+unary = {
+    "-" ~ unary
+  | "not" ~ unary
+  | primary
+}
+
+// PRIMARY EXPRESSIONS - Ordered by specificity
+primary = {
+    "(" ~ expr ~ ")" // parenthesized expression
+
+  | ident ~ "@" ~ ident ~ "(" ~ axis_mapping_list ~ ")" // strand remap
+
+  | ident ~ "@" ~ ident // strand access
+
+  | ident ~ "(" ~ expr_list ~ ")" // function call
+
+  | ident ~ "[" ~ expr ~ "]" // indexing
+
+  | "me" ~ "@" ~ ident // me.field
+
+  | "<" ~ expr_list ~ ">" // bundle
+
+  | ident // variable
+
+  | number
+  | string
+}
+
+// HELPERS
+axis_mapping_list = { (axis_mapping ~ ("," ~ axis_mapping)*)? }
+axis_mapping      = { expr ~ "~" ~ expr }
+
+expr_list  = { (expr ~ ("," ~ expr)*)? }
+ident_list = { (ident ~ ("," ~ ident)*)? }
+
+bundle_or_expr_list = { (bundle_or_expr ~ ("," ~ bundle_or_expr)*)? }
+bundle_or_expr      = { "<" ~ expr_list ~ ">" | expr }
+
+// TERMINALS
+ident = @{
+    !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHA | ASCII_DIGIT | "_")*
+}
+
+keyword = {
+    "spindle"
+  | "if"
+  | "then"
+  | "else"
+  | "not"
+  | "and"
+  | "or"
+  | "display"
+  | "render"
+  | "play"
+  | "compute"
+  | "let"
+  | "out"
+  | "for"
+  | "in"
+  | "to"
+  | "me"
+  | "render_3d"
+  | "web"
+  | "osc"
+  | "midi"
+  | "data"
+}
+
+number = @{
+    ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ exp_part?
+  | "." ~ ASCII_DIGIT+ ~ exp_part?
+  | ASCII_DIGIT+ ~ exp_part?
+}
+
+exp_part = @{ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
+
+string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
