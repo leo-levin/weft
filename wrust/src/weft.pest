@@ -19,7 +19,6 @@ statement = {
   | spindle_def
   | env_assignment
   | instance_binding
-  | assignment
   | render_stmt
   | play_stmt
   | compute_stmt
