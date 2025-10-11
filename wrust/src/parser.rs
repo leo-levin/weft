@@ -1,4 +1,4 @@
-use crate::{ast::*, backend};
+use crate::{ast::*};
 use pest::iterators::Pair;
 use pest::Parser;
 use pest_derive::Parser;
