@@ -1,4 +1,4 @@
-use crate::ast::*;
+use crate::{ast::*, backend};
 use pest::iterators::Pair;
 use pest::Parser;
 use pest_derive::Parser;
@@ -518,7 +518,7 @@ fn build_output_statement(pair: Pair<Rule>) -> ASTNode {
     use std::collections::HashMap;
 
     let mut inner = pair.into_inner();
-    let _backend_keyword = inner.next().unwrap();
+    let context = inner.next().unwrap().as_str().to_string();
     let stmt_arg_list = inner.next().unwrap();
 
     let mut args = Vec::new();
@@ -548,6 +548,7 @@ fn build_output_statement(pair: Pair<Rule>) -> ASTNode {
     }
 
     ASTNode::Backend(BackendExpr {
+        context,
         args,
         named_args,
         positional_args,
