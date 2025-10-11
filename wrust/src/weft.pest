@@ -15,7 +15,8 @@ block_comment =  { "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 program = { SOI ~ statement* ~ EOI }
 
 statement = {
-    pragma
+    // pragma
+  
   | spindle_def
   | env_assignment
   | instance_binding

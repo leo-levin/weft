@@ -26,7 +26,6 @@ fn build_program(pair: Pair<Rule>) -> Program {
             _ => unreachable!(),
         }
     }
-
     Program { statements }
 }
 
@@ -39,7 +38,7 @@ fn build_statement(pair: Pair<Rule>) -> ASTNode {
         Rule::render_stmt => build_render_stmt(pair),
         Rule::play_stmt => build_play_stmt(pair),
         Rule::compute_stmt => build_compute_stmt(pair),
-        Rule::pragma => build_pragma(pair),
+        // Rule::pragma => build_pragma(pair),
         _ => unreachable!("Unexpected statement rule: {:?}", pair.as_rule()),
     }
 }
@@ -55,6 +54,7 @@ fn build_assignment(pair: Pair<Rule>) -> ASTNode {
         name,
         op,
         expr: Box::new(expr),
+        is_output: false,
     })
 }
 
@@ -88,17 +88,72 @@ fn build_logical_expr(pair: Pair<Rule>) -> ASTNode {
 }
 
 fn build_spindle_def(pair: Pair<Rule>) -> ASTNode {
-    // TODO(human): Implement spindle definition parsing
-    // Grammar: "spindle" ~ ident ~ "(" ~ ident_list ~ ")" ~ "::" ~ output_spec ~ block
-    // Children (no literals): ident, ident_list, output_spec, block
-    // Hint: Use build_ident_list() and build_output_spec() helpers
-    // Hint: build_block() returns a different type - check the AST!
-    todo!("Implement spindle_def parsing")
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let inputs = build_ident_list(inner.next().unwrap());
+    let outputs = build_output_spec(inner.next().unwrap());
+    let body = Box::new(build_block(inner.next().unwrap()));
+
+    ASTNode::SpindleDef(SpindleDef {
+        name,
+        inputs,
+        outputs,
+        body,
+    })
+}
+
+fn build_block(pair: Pair<Rule>) -> ASTNode {
+    let mut body = Vec::new();
+    for stmt_pair in pair.into_inner() {
+        body.push(build_block_statement(stmt_pair));
+    }
+
+    ASTNode::Block(BlockExpr { body })
+}
+
+fn build_block_statement(pair: Pair<Rule>) -> ASTNode {
+    let inner = pair.into_inner().next().unwrap();
+    match inner.as_rule() {
+        Rule::output_assignment => build_output_assignment(inner),
+        Rule::assignment => build_assignment(inner),
+        Rule::for_loop => build_for_loop(inner),
+        Rule::if_expr => build_if_expr(inner),
+        _ => unreachable!(),
+    }
+}
+
+fn build_output_assignment(pair: Pair<Rule>) -> ASTNode {
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let expr = Box::new(build_expr(inner.next().unwrap()));
+
+    ASTNode::Assignment(AssignmentExpr {
+        name,
+        op: "=".to_string(),
+        expr,
+        is_output: true,
+    })
+}
+
+fn build_for_loop(pair: Pair<Rule>) -> ASTNode {
+    // Grammar: "for" ~ ident ~ "in" ~ "(" ~ expr ~ "to" ~ expr ~ ")" ~ block
+    // Children: ident, expr, expr, block
+    let mut inner = pair.into_inner();
+    let var = inner.next().unwrap().as_str().to_string();
+    let start = Box::new(build_expr(inner.next().unwrap()));
+    let end = Box::new(build_expr(inner.next().unwrap()));
+    let body = Box::new(build_block(inner.next().unwrap()));
+
+    ASTNode::ForLoop(ForLoopExpr {
+        var,
+        start,
+        end,
+        body,
+    })
 }
 
 fn build_env_assignment(pair: Pair<Rule>) -> ASTNode {
     let mut inner = pair.into_inner();
-    // Only 2 children: ident and expr (literals don't create children)
     let ident = inner.next().unwrap().as_str().to_string();
     let expr = Box::new(build_expr(inner.next().unwrap()));
 
@@ -106,6 +161,7 @@ fn build_env_assignment(pair: Pair<Rule>) -> ASTNode {
         name: ident,
         op: "=".to_string(),
         expr,
+        is_output: false,
     })
 }
 
@@ -148,7 +204,7 @@ fn build_multi_spindle_call(pair: Pair<Rule>) -> ASTNode {
             }
             Rule::expr => {
                 let single = build_expr(arg_inner);
-                arg_slots.push((0..multiplier).map(|_| single.clone()).collect());
+                args_slots.push((0..multiplier).map(|_| single.clone()).collect());
             }
             _ => unreachable!(),
         }
@@ -156,7 +212,7 @@ fn build_multi_spindle_call(pair: Pair<Rule>) -> ASTNode {
 
     let mut calls = Vec::new();
     for i in 0..multiplier {
-        let call_args: Vec<ASTNode> = arg_slots.iter().map(|slot| slot[i].clone()).collect();
+        let call_args: Vec<ASTNode> = args_slots.iter().map(|slot| slot[i].clone()).collect();
         calls.push(ASTNode::Call(CallExpr {
             name: func_var.clone(),
             args: call_args,
@@ -241,7 +297,7 @@ fn build_pragma(pair: Pair<Rule>) -> ASTNode {
     // Children: ident (type), pragma_body
     // pragma_body.as_str() gives the full text
     // Note: Pragma validation happens at runtime, not parse time!
-    todo!("Implement pragma parsing")
+    todo!("l8r sk8r")
 }
 
 fn build_if_expr(pair: Pair<Rule>) -> ASTNode {

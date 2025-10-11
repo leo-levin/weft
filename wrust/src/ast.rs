@@ -82,6 +82,7 @@ pub struct AssignmentExpr {
     pub name: String,
     pub op: String,
     pub expr: Box<ASTNode>,
+    pub is_output: bool,
 }
 
 #[derive(Clone)]
@@ -116,6 +117,18 @@ pub struct InstanceBindExpr {
 pub struct Program {
     pub statements: Vec<ASTNode>,
 }
+#[derive(Clone)]
+pub struct BlockExpr {
+    pub body: Vec<ASTNode>,
+}
+
+#[derive(Clone)]
+pub struct ForLoopExpr {
+    pub var: String,
+    pub start: Box<ASTNode>,
+    pub end: Box<ASTNode>,
+    pub body: Box<ASTNode>,
+}
 
 #[derive(Clone)]
 pub enum ASTNode {
@@ -142,5 +155,7 @@ pub enum ASTNode {
     ComputeStmt(OutputStatement),
     SpindleDef(SpindleDef),
     InstanceBinding(InstanceBindExpr),
+    ForLoop(ForLoopExpr),
+    Block(BlockExpr),
     Program(Program),
 }
