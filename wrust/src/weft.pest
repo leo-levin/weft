@@ -1,16 +1,10 @@
-// ============================================================================
-// WHITESPACE & COMMENTS
-// ============================================================================
+// WEFT grammar
 
 WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
 
 COMMENT       = _{ line_comment | block_comment }
 line_comment  =  { "//" ~ (!"\n" ~ ANY)* }
 block_comment =  { "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
-
-// ============================================================================
-// PROGRAM STRUCTURE
-// ============================================================================
 
 program = { SOI ~ statement* ~ EOI }
 
@@ -25,9 +19,8 @@ statement = {
   | compute_stmt
 }
 
-// STATEMENTS
-pragma      = { "#" ~ ident ~ pragma_body }
-pragma_body = { (!"\n" ~ ANY)* ~ "\n"? }
+// pragma      = { "#" ~ ident ~ pragma_body }
+// pragma_body = { (!"\n" ~ ANY)* ~ "\n"? }
 
 env_assignment = { "me" ~ "<" ~ ident ~ ">" ~ "=" ~ expr }
 
