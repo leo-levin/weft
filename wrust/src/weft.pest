@@ -92,7 +92,6 @@ unary = {
   | postfix
 }
 
-// Postfix operators (strand access, function calls, indexing)
 postfix = {
     atom ~ postfix_op*
 }
@@ -106,10 +105,6 @@ postfix_op = {
 
   | "[" ~ expr ~ "]" // indexing
 }
-
-// For debugging: try a simpler version that doesn't have circular dependency
-// postfix_simple = { atom_simple ~ ("@" ~ ident)? }
-// atom_simple = { ident | number }
 
 // PRIMARY/ATOM EXPRESSIONS
 atom = {
@@ -144,11 +139,7 @@ ident = @{
 }
 
 keyword = @{
-    ("spindle" | "if" | "then" | "else" | "not" | "and" | "or"
-    | "display" | "render" | "play" | "compute" | "let" | "out"
-    | "for" | "in" | "to" | "me" | "render_3d" | "web" | "osc"
-    | "midi" | "data")
-    ~ !(ASCII_ALPHA | ASCII_DIGIT | "_")
+    ("spindle" | "if" | "then" | "else" | "not" | "and" | "or" | "display" | "render" | "play" | "compute" | "let" | "out" | "for" | "in" | "to" | "me" | "render_3d" | "web" | "osc" | "midi" | "data") ~ !(ASCII_ALPHA | ASCII_DIGIT | "_")
 }
 
 number = @{

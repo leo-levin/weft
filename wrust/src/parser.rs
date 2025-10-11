@@ -357,9 +357,6 @@ fn build_power(pair: Pair<Rule>) -> ASTNode {
     let mut inner = pair.into_inner();
 
     let left = build_unary(inner.next().unwrap());
-
-    // If there's a second element, it's the right-hand power
-    // (the ^ literal is not emitted as a separate Pair by Pest)
     if let Some(right_pair) = inner.next() {
         let right = build_power(right_pair);
 
@@ -374,16 +371,12 @@ fn build_power(pair: Pair<Rule>) -> ASTNode {
 }
 
 fn build_unary(pair: Pair<Rule>) -> ASTNode {
-    // Get the source string before consuming the pair
     let source = pair.as_str();
     let mut inner = pair.into_inner();
     let first = inner.next().unwrap();
 
     match first.as_rule() {
         Rule::unary => {
-            // Recursive unary (-, not)
-            // Determine the operator by checking the source text
-            // since Pest doesn't emit literal tokens
             let op = if source.trim_start().starts_with('-') {
                 "-".to_string()
             } else {
@@ -405,7 +398,6 @@ fn build_postfix(pair: Pair<Rule>) -> ASTNode {
     let mut inner = pair.into_inner();
     let mut base = build_atom(inner.next().unwrap());
 
-    // Apply postfix operators
     for postfix_op_pair in inner {
         base = build_postfix_op(base, postfix_op_pair);
     }
@@ -419,10 +411,8 @@ fn build_postfix_op(base: ASTNode, pair: Pair<Rule>) -> ASTNode {
 
     match first.as_rule() {
         Rule::ident => {
-            // Could be strand access or strand remap
             let strand_name = first.as_str().to_string();
             if let Some(axis_mapping_list_pair) = inner.next() {
-                // Strand remap
                 let mappings = build_axis_mapping_list(axis_mapping_list_pair);
                 ASTNode::StrandRemap(StrandRemapExpr {
                     base: Box::new(base),
@@ -430,7 +420,6 @@ fn build_postfix_op(base: ASTNode, pair: Pair<Rule>) -> ASTNode {
                     mappings,
                 })
             } else {
-                // Strand access
                 ASTNode::StrandAccess(StrandAccessExpr {
                     base: Box::new(base),
                     out: Box::new(ASTNode::Var(VarExpr { name: strand_name })),
@@ -438,20 +427,16 @@ fn build_postfix_op(base: ASTNode, pair: Pair<Rule>) -> ASTNode {
             }
         }
         Rule::expr_list => {
-            // Function call
             let args = build_expr_list(first);
             ASTNode::Call(CallExpr {
                 name: Box::new(base),
                 args,
             })
         }
-        Rule::expr => {
-            // Indexing
-            ASTNode::Index(IndexExpr {
-                base: Box::new(base),
-                index: Box::new(build_expr(first)),
-            })
-        }
+        Rule::expr => ASTNode::Index(IndexExpr {
+            base: Box::new(base),
+            index: Box::new(build_expr(first)),
+        }),
         _ => unreachable!("Unexpected postfix_op rule: {:?}", first.as_rule()),
     }
 }
@@ -461,9 +446,7 @@ fn build_atom(pair: Pair<Rule>) -> ASTNode {
     let mut inner = pair.into_inner();
     let first = inner.next().unwrap();
 
-    // Check for "me" keyword case: me@field
     if source.starts_with("me") && source.contains('@') {
-        // me @ ident
         let field = first.as_str().to_string();
         return ASTNode::Me(MeExpr { field });
     }
@@ -480,12 +463,8 @@ fn build_atom(pair: Pair<Rule>) -> ASTNode {
         Rule::string => ASTNode::Str(StrExpr {
             v: first.as_str().to_string(),
         }),
-        Rule::expr => {
-            // Parenthesized expression
-            build_expr(first)
-        }
+        Rule::expr => build_expr(first),
         Rule::expr_list => {
-            // Bundle: < expr_list >
             let items = build_expr_list(first);
             ASTNode::Tuple(TupleExpr { items })
         }
@@ -539,8 +518,8 @@ fn build_output_statement(pair: Pair<Rule>) -> ASTNode {
     use std::collections::HashMap;
 
     let mut inner = pair.into_inner();
-    let _backend_keyword = inner.next().unwrap(); // Skip backend keyword
-    let stmt_arg_list = inner.next().unwrap(); // Get the argument list
+    let _backend_keyword = inner.next().unwrap();
+    let stmt_arg_list = inner.next().unwrap();
 
     let mut args = Vec::new();
     let mut named_args = HashMap::new();
@@ -551,7 +530,6 @@ fn build_output_statement(pair: Pair<Rule>) -> ASTNode {
         let children: Vec<_> = inner.collect();
 
         if children.len() == 2 {
-            // Named arg: ident ~ ":" ~ expr
             let name = children[0].as_str().to_string();
             let value = build_expr(children[1].clone());
 
@@ -563,7 +541,6 @@ fn build_output_statement(pair: Pair<Rule>) -> ASTNode {
             args.push(named_arg);
             named_args.insert(name, value);
         } else {
-            // Positional arg: just expr
             let expr = build_expr(children[0].clone());
             args.push(expr.clone());
             positional_args.push(expr);
