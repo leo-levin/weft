@@ -14,9 +14,7 @@ statement = {
   | spindle_def
   | env_assignment
   | instance_binding
-  | render_stmt
-  | play_stmt
-  | compute_stmt
+  | backend_expr
 }
 
 // pragma      = { "#" ~ ident ~ pragma_body }
@@ -42,9 +40,8 @@ direct_bind  = { ident ~ output_spec ~ "=" ~ expr }
 assignment = { ident ~ assign_op ~ expr }
 assign_op  = { "+=" | "-=" | "*=" | "/=" | "=" }
 
-render_stmt  = { "render" ~ "(" ~ stmt_arg_list ~ ")" }
-play_stmt    = { "play" ~ "(" ~ stmt_arg_list ~ ")" }
-compute_stmt = { "compute" ~ "(" ~ stmt_arg_list ~ ")" }
+backend_expr    = { backend_keyword ~ "(" ~ stmt_arg_list ~ ")" }
+backend_keyword = { "display" | "render" | "play" | "compute" | "render_3d" | "web" | "osc" | "midi" | "data" }
 
 stmt_arg_list = { (stmt_arg ~ ("," ~ stmt_arg)*)? }
 stmt_arg      = { ident ~ ":" ~ expr | expr }
@@ -92,22 +89,33 @@ power = { unary ~ ("^" ~ power)? }
 unary = {
     "-" ~ unary
   | "not" ~ unary
-  | primary
+  | postfix
 }
 
-// PRIMARY EXPRESSIONS - Ordered by specificity
-primary = {
-    "(" ~ expr ~ ")" // parenthesized expression
+// Postfix operators (strand access, function calls, indexing)
+postfix = {
+    atom ~ postfix_op*
+}
 
-  | ident ~ "@" ~ ident ~ "(" ~ axis_mapping_list ~ ")" // strand remap
+postfix_op = {
+    "@" ~ ident ~ "(" ~ axis_mapping_list ~ ")" // strand remap
 
-  | ident ~ "@" ~ ident // strand access
+  | "@" ~ ident // strand access
 
-  | ident ~ "(" ~ expr_list ~ ")" // function call
+  | "(" ~ expr_list ~ ")" // function call
 
-  | ident ~ "[" ~ expr ~ "]" // indexing
+  | "[" ~ expr ~ "]" // indexing
+}
 
-  | "me" ~ "@" ~ ident // me.field
+// For debugging: try a simpler version that doesn't have circular dependency
+// postfix_simple = { atom_simple ~ ("@" ~ ident)? }
+// atom_simple = { ident | number }
+
+// PRIMARY/ATOM EXPRESSIONS
+atom = {
+    "me" ~ "@" ~ ident // me.field
+
+  | "(" ~ expr ~ ")" // parenthesized expression
 
   | "<" ~ expr_list ~ ">" // bundle
 
@@ -119,7 +127,10 @@ primary = {
 
 // HELPERS
 axis_mapping_list = { (axis_mapping ~ ("," ~ axis_mapping)*)? }
-axis_mapping      = { expr ~ "~" ~ expr }
+axis_mapping      = { axis_ref ~ "~" ~ expr }
+
+// Axis reference - always instance@output form (no plain identifiers)
+axis_ref = { ident ~ "@" ~ ident }
 
 expr_list  = { (expr ~ ("," ~ expr)*)? }
 ident_list = { (ident ~ ("," ~ ident)*)? }
@@ -132,29 +143,12 @@ ident = @{
     !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHA | ASCII_DIGIT | "_")*
 }
 
-keyword = {
-    "spindle"
-  | "if"
-  | "then"
-  | "else"
-  | "not"
-  | "and"
-  | "or"
-  | "display"
-  | "render"
-  | "play"
-  | "compute"
-  | "let"
-  | "out"
-  | "for"
-  | "in"
-  | "to"
-  | "me"
-  | "render_3d"
-  | "web"
-  | "osc"
-  | "midi"
-  | "data"
+keyword = @{
+    ("spindle" | "if" | "then" | "else" | "not" | "and" | "or"
+    | "display" | "render" | "play" | "compute" | "let" | "out"
+    | "for" | "in" | "to" | "me" | "render_3d" | "web" | "osc"
+    | "midi" | "data")
+    ~ !(ASCII_ALPHA | ASCII_DIGIT | "_")
 }
 
 number = @{

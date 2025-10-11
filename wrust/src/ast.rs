@@ -66,7 +66,7 @@ pub struct StrandRemapExpr {
 
 #[derive(Clone)]
 pub struct AxisMapping {
-    pub axis: String,
+    pub axis: Box<ASTNode>,
     pub expr: Box<ASTNode>,
 }
 
@@ -92,7 +92,7 @@ pub struct NamedArg {
 }
 
 #[derive(Clone)]
-pub struct OutputStatement {
+pub struct BackendExpr {
     pub args: Vec<ASTNode>,
     pub named_args: HashMap<String, ASTNode>,
     pub positional_args: Vec<ASTNode>,
@@ -149,10 +149,7 @@ pub enum ASTNode {
     // Statements
     Assignment(AssignmentExpr),
     NamedArg(NamedArg),
-    DisplayStmt(OutputStatement),
-    RenderStmt(OutputStatement),
-    PlayStmt(OutputStatement),
-    ComputeStmt(OutputStatement),
+    Backend(BackendExpr),
     SpindleDef(SpindleDef),
     InstanceBinding(InstanceBindExpr),
     ForLoop(ForLoopExpr),

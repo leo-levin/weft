@@ -35,9 +35,7 @@ fn build_statement(pair: Pair<Rule>) -> ASTNode {
         Rule::env_assignment => build_env_assignment(pair),
         Rule::instance_binding => build_instance_binding(pair),
         Rule::assignment => build_assignment(pair),
-        Rule::render_stmt => build_render_stmt(pair),
-        Rule::play_stmt => build_play_stmt(pair),
-        Rule::compute_stmt => build_compute_stmt(pair),
+        Rule::backend_expr => build_output_statement(pair),
         // Rule::pragma => build_pragma(pair),
         _ => unreachable!("Unexpected statement rule: {:?}", pair.as_rule()),
     }
@@ -175,10 +173,15 @@ fn build_instance_binding(pair: Pair<Rule>) -> ASTNode {
 }
 
 fn build_multi_spindle_call(pair: Pair<Rule>) -> ASTNode {
+    // Extract multiplier from source string (e.g., "blur<3>(...)" -> "3")
+    let source = pair.as_str();
+    let mult_start = source.find('<').unwrap() + 1;
+    let mult_end = source.find('>').unwrap();
+    let multiplier = source[mult_start..mult_end].parse::<usize>().unwrap();
+
     let mut inner = pair.into_inner();
 
     let func_name = inner.next().unwrap().as_str().to_string();
-    let multiplier = inner.next().unwrap().as_str().parse::<usize>().unwrap();
     let args_list = inner.next().unwrap();
     let name = inner.next().unwrap().as_str().to_string();
     let outputs = build_output_spec(inner.next().unwrap());
@@ -268,40 +271,13 @@ fn build_output_spec(pair: Pair<Rule>) -> Vec<String> {
         .collect()
 }
 
-fn build_render_stmt(pair: Pair<Rule>) -> ASTNode {
-    let mut inner = pair.into_inner();
-    let stmt_args = inner.next().unwrap();
-    let output_stmt = build_output_statement(stmt_args);
+//fn build_pragma(pair: Pair<Rule>) -> ASTNode {
+//let inner = pair.into_inner();
 
-    ASTNode::RenderStmt(output_stmt)
-}
-
-fn build_play_stmt(pair: Pair<Rule>) -> ASTNode {
-    let mut inner = pair.into_inner();
-    let stmt_args = inner.next().unwrap();
-    let output_stmt = build_output_statement(stmt_args);
-
-    ASTNode::PlayStmt(output_stmt)
-}
-
-fn build_compute_stmt(pair: Pair<Rule>) -> ASTNode {
-    let mut inner = pair.into_inner();
-    let stmt_args = inner.next().unwrap();
-    let output_stmt = build_output_statement(stmt_args);
-
-    ASTNode::ComputeStmt(output_stmt)
-}
-
-fn build_pragma(pair: Pair<Rule>) -> ASTNode {
-    let mut inner = pair.into_inner();
-
-    // TODO(human): Simple pragma parsing
-    // Grammar: "#" ~ ident ~ pragma_body
-    // Children: ident (type), pragma_body
-    // pragma_body.as_str() gives the full text
-    // Note: Pragma validation happens at runtime, not parse time!
-    todo!("l8r sk8r")
-}
+// Grammar: "#" ~ ident ~ pragma_body
+// Children: ident (type), pragma_body
+// pragma_body.as_str() gives the full text
+// Note: Pragma validation happens at runtime, not parse time!
 
 fn build_if_expr(pair: Pair<Rule>) -> ASTNode {
     let mut inner = pair.into_inner();
@@ -382,8 +358,10 @@ fn build_power(pair: Pair<Rule>) -> ASTNode {
 
     let left = build_unary(inner.next().unwrap());
 
-    if let Some(_caret) = inner.next() {
-        let right = build_power(inner.next().unwrap());
+    // If there's a second element, it's the right-hand power
+    // (the ^ literal is not emitted as a separate Pair by Pest)
+    if let Some(right_pair) = inner.next() {
+        let right = build_power(right_pair);
 
         ASTNode::Binary(BinaryExpr {
             op: "^".to_string(),
@@ -396,56 +374,124 @@ fn build_power(pair: Pair<Rule>) -> ASTNode {
 }
 
 fn build_unary(pair: Pair<Rule>) -> ASTNode {
-    let inner = pair.into_inner().next().unwrap();
+    // Get the source string before consuming the pair
+    let source = pair.as_str();
+    let mut inner = pair.into_inner();
+    let first = inner.next().unwrap();
 
-    match inner.as_rule() {
+    match first.as_rule() {
         Rule::unary => {
             // Recursive unary (-, not)
-            let mut unary_inner = inner.into_inner();
-            let op_pair = unary_inner.next().unwrap();
-            let op = if op_pair.as_str() == "-" {
+            // Determine the operator by checking the source text
+            // since Pest doesn't emit literal tokens
+            let op = if source.trim_start().starts_with('-') {
                 "-".to_string()
             } else {
                 "NOT".to_string()
             };
-            let expr = build_unary(unary_inner.next().unwrap());
+            let expr = build_unary(first);
 
             ASTNode::Unary(UnaryExpr {
                 op,
                 expr: Box::new(expr),
             })
         }
-        Rule::primary => build_primary(inner),
+        Rule::postfix => build_postfix(first),
         _ => unreachable!(),
     }
 }
 
-fn build_primary(pair: Pair<Rule>) -> ASTNode {
-    let inner = pair.into_inner().next().unwrap();
+fn build_postfix(pair: Pair<Rule>) -> ASTNode {
+    let mut inner = pair.into_inner();
+    let mut base = build_atom(inner.next().unwrap());
 
-    match inner.as_rule() {
-        Rule::number => {
-            let value = inner.as_str().parse::<f64>().unwrap();
-            ASTNode::Num(NumExpr { v: value })
+    // Apply postfix operators
+    for postfix_op_pair in inner {
+        base = build_postfix_op(base, postfix_op_pair);
+    }
+
+    base
+}
+
+fn build_postfix_op(base: ASTNode, pair: Pair<Rule>) -> ASTNode {
+    let mut inner = pair.into_inner();
+    let first = inner.next().unwrap();
+
+    match first.as_rule() {
+        Rule::ident => {
+            // Could be strand access or strand remap
+            let strand_name = first.as_str().to_string();
+            if let Some(axis_mapping_list_pair) = inner.next() {
+                // Strand remap
+                let mappings = build_axis_mapping_list(axis_mapping_list_pair);
+                ASTNode::StrandRemap(StrandRemapExpr {
+                    base: Box::new(base),
+                    strand: strand_name,
+                    mappings,
+                })
+            } else {
+                // Strand access
+                ASTNode::StrandAccess(StrandAccessExpr {
+                    base: Box::new(base),
+                    out: Box::new(ASTNode::Var(VarExpr { name: strand_name })),
+                })
+            }
         }
-        Rule::string => ASTNode::Str(StrExpr {
-            v: inner.as_str().to_string(),
-        }),
-        Rule::ident => ASTNode::Var(VarExpr {
-            name: inner.as_str().to_string(),
-        }),
-        Rule::expr => build_expr(inner),
         Rule::expr_list => {
-            let items = build_expr_list(inner);
-            ASTNode::Tuple(TupleExpr { items: items })
+            // Function call
+            let args = build_expr_list(first);
+            ASTNode::Call(CallExpr {
+                name: Box::new(base),
+                args,
+            })
         }
-        _ => todo!("Implement other primary expressions: {:?}", inner.as_rule()),
+        Rule::expr => {
+            // Indexing
+            ASTNode::Index(IndexExpr {
+                base: Box::new(base),
+                index: Box::new(build_expr(first)),
+            })
+        }
+        _ => unreachable!("Unexpected postfix_op rule: {:?}", first.as_rule()),
     }
 }
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
+fn build_atom(pair: Pair<Rule>) -> ASTNode {
+    let source = pair.as_str();
+    let mut inner = pair.into_inner();
+    let first = inner.next().unwrap();
+
+    // Check for "me" keyword case: me@field
+    if source.starts_with("me") && source.contains('@') {
+        // me @ ident
+        let field = first.as_str().to_string();
+        return ASTNode::Me(MeExpr { field });
+    }
+
+    match first.as_rule() {
+        Rule::ident => {
+            let ident = first.as_str().to_string();
+            ASTNode::Var(VarExpr { name: ident })
+        }
+        Rule::number => {
+            let value = first.as_str().parse::<f64>().unwrap();
+            ASTNode::Num(NumExpr { v: value })
+        }
+        Rule::string => ASTNode::Str(StrExpr {
+            v: first.as_str().to_string(),
+        }),
+        Rule::expr => {
+            // Parenthesized expression
+            build_expr(first)
+        }
+        Rule::expr_list => {
+            // Bundle: < expr_list >
+            let items = build_expr_list(first);
+            ASTNode::Tuple(TupleExpr { items })
+        }
+        _ => todo!("Implement other atom expressions: {:?}", first.as_rule()),
+    }
+}
 
 fn build_ident_list(pair: Pair<Rule>) -> Vec<String> {
     pair.into_inner()
@@ -459,14 +505,48 @@ fn build_expr_list(pair: Pair<Rule>) -> Vec<ASTNode> {
         .collect()
 }
 
-fn build_output_statement(pair: Pair<Rule>) -> OutputStatement {
+fn build_axis_mapping_list(pair: Pair<Rule>) -> Vec<AxisMapping> {
+    pair.into_inner()
+        .map(|mapping_pair| build_axis_mapping(mapping_pair))
+        .collect()
+}
+
+fn build_axis_mapping(pair: Pair<Rule>) -> AxisMapping {
+    let mut inner = pair.into_inner();
+    let axis_ref = build_axis_ref(inner.next().unwrap());
+    let value_expr = build_expr(inner.next().unwrap());
+
+    AxisMapping {
+        axis: Box::new(axis_ref),
+        expr: Box::new(value_expr),
+    }
+}
+
+fn build_axis_ref(pair: Pair<Rule>) -> ASTNode {
+    let mut inner = pair.into_inner();
+    let instance_name = inner.next().unwrap().as_str().to_string();
+    let output_name = inner.next().unwrap().as_str().to_string();
+
+    ASTNode::StrandAccess(StrandAccessExpr {
+        base: Box::new(ASTNode::Var(VarExpr {
+            name: instance_name,
+        })),
+        out: Box::new(ASTNode::Var(VarExpr { name: output_name })),
+    })
+}
+
+fn build_output_statement(pair: Pair<Rule>) -> ASTNode {
     use std::collections::HashMap;
+
+    let mut inner = pair.into_inner();
+    let _backend_keyword = inner.next().unwrap(); // Skip backend keyword
+    let stmt_arg_list = inner.next().unwrap(); // Get the argument list
 
     let mut args = Vec::new();
     let mut named_args = HashMap::new();
     let mut positional_args = Vec::new();
 
-    for stmt_arg_pair in pair.into_inner() {
+    for stmt_arg_pair in stmt_arg_list.into_inner() {
         let inner = stmt_arg_pair.into_inner();
         let children: Vec<_> = inner.collect();
 
@@ -490,11 +570,11 @@ fn build_output_statement(pair: Pair<Rule>) -> OutputStatement {
         }
     }
 
-    OutputStatement {
+    ASTNode::Backend(BackendExpr {
         args,
         named_args,
         positional_args,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -576,7 +656,7 @@ mod tests {
 
         match &result.statements[0] {
             ASTNode::InstanceBinding(bind) => match bind.expr.as_ref() {
-                ASTNode::Binary(bin) => assert_eq!(bin.op, ">"),
+                ASTNode::Binary(bin) => assert_eq!(bin.op, ">>"),
                 _ => panic!("Expected Binary"),
             },
             _ => panic!("Expected InstanceBinding"),
@@ -664,12 +744,12 @@ mod tests {
 
     #[test]
     fn test_direct_bind() {
-        let result = parse("myInst<out> = 42").unwrap();
+        let result = parse("myInst<result> = 42").unwrap();
 
         match &result.statements[0] {
             ASTNode::InstanceBinding(bind) => {
                 assert_eq!(bind.name, "myInst");
-                assert_eq!(bind.outputs, vec!["out"]);
+                assert_eq!(bind.outputs, vec!["result"]);
             }
             _ => panic!("Expected InstanceBinding"),
         }
@@ -677,12 +757,12 @@ mod tests {
 
     #[test]
     fn test_spindle_call() {
-        let result = parse("blur(img, 5) :: result<out>").unwrap();
+        let result = parse("blur(img, 5) :: result<value>").unwrap();
 
         match &result.statements[0] {
             ASTNode::InstanceBinding(bind) => {
                 assert_eq!(bind.name, "result");
-                assert_eq!(bind.outputs, vec!["out"]);
+                assert_eq!(bind.outputs, vec!["value"]);
 
                 match bind.expr.as_ref() {
                     ASTNode::Call(call) => {
@@ -701,11 +781,11 @@ mod tests {
 
     #[test]
     fn test_multi_spindle_call() {
-        let result = parse("blur<3>(<1, 2, 3>, radius) :: inst<a, b, c>").unwrap();
+        let result = parse("blur<3>(<1, 2, 3>, radius) :: myInstance<a, b, c>").unwrap();
 
         match &result.statements[0] {
             ASTNode::InstanceBinding(bind) => {
-                assert_eq!(bind.name, "inst");
+                assert_eq!(bind.name, "myInstance");
                 assert_eq!(bind.outputs, vec!["a", "b", "c"]);
 
                 match bind.expr.as_ref() {
@@ -795,42 +875,27 @@ mod tests {
     }
 
     #[test]
-    fn test_render_stmt() {
-        let result = parse("render(img, width: 800)").unwrap();
-
-        match &result.statements[0] {
-            ASTNode::RenderStmt(stmt) => {
-                assert_eq!(stmt.args.len(), 2);
-                assert_eq!(stmt.positional_args.len(), 1);
-                assert_eq!(stmt.named_args.len(), 1);
-                assert!(stmt.named_args.contains_key("width"));
-            }
-            _ => panic!("Expected RenderStmt"),
-        }
-    }
-
-    #[test]
     fn test_play_stmt() {
         let result = parse("play(audio)").unwrap();
 
         match &result.statements[0] {
-            ASTNode::PlayStmt(stmt) => {
+            ASTNode::Backend(stmt) => {
                 assert_eq!(stmt.positional_args.len(), 1);
             }
-            _ => panic!("Expected PlayStmt"),
+            _ => panic!("Expected Backend"),
         }
     }
 
     #[test]
     fn test_compute_stmt() {
-        let result = parse("compute(data, workers: 4)").unwrap();
+        let result = parse("compute(x, workers: 4)").unwrap();
 
         match &result.statements[0] {
-            ASTNode::ComputeStmt(stmt) => {
+            ASTNode::Backend(stmt) => {
                 assert_eq!(stmt.args.len(), 2);
                 assert_eq!(stmt.named_args.len(), 1);
             }
-            _ => panic!("Expected ComputeStmt"),
+            _ => panic!("Expected Backend"),
         }
     }
 
@@ -917,6 +982,162 @@ mod tests {
                 _ => panic!("Expected Block"),
             },
             _ => panic!("Expected SpindleDef"),
+        }
+    }
+
+    #[test]
+    fn test_function_call_in_expr() {
+        let result = parse("x<a> = sqrt(25)").unwrap();
+
+        match &result.statements[0] {
+            ASTNode::InstanceBinding(bind) => match bind.expr.as_ref() {
+                ASTNode::Call(call) => {
+                    match call.name.as_ref() {
+                        ASTNode::Var(v) => assert_eq!(v.name, "sqrt"),
+                        _ => panic!("Expected Var"),
+                    }
+                    assert_eq!(call.args.len(), 1);
+                }
+                _ => panic!("Expected Call"),
+            },
+            _ => panic!("Expected InstanceBinding"),
+        }
+    }
+
+    #[test]
+    fn test_strand_access() {
+        let result = parse("x<a> = image@rgb").unwrap();
+
+        match &result.statements[0] {
+            ASTNode::InstanceBinding(bind) => match bind.expr.as_ref() {
+                ASTNode::StrandAccess(access) => {
+                    match access.base.as_ref() {
+                        ASTNode::Var(v) => assert_eq!(v.name, "image"),
+                        _ => panic!("Expected Var"),
+                    }
+                    match access.out.as_ref() {
+                        ASTNode::Var(v) => assert_eq!(v.name, "rgb"),
+                        _ => panic!("Expected Var"),
+                    }
+                }
+                _ => panic!("Expected StrandAccess"),
+            },
+            _ => panic!("Expected InstanceBinding"),
+        }
+    }
+
+    #[test]
+    fn test_strand_remap() {
+        let result = parse("x<a> = image@rgb(coord@x ~ newX, coord@y ~ newY)").unwrap();
+
+        match &result.statements[0] {
+            ASTNode::InstanceBinding(bind) => match bind.expr.as_ref() {
+                ASTNode::StrandRemap(remap) => {
+                    match remap.base.as_ref() {
+                        ASTNode::Var(v) => assert_eq!(v.name, "image"),
+                        _ => panic!("Expected Var"),
+                    }
+                    assert_eq!(remap.strand, "rgb");
+                    assert_eq!(remap.mappings.len(), 2);
+                    // First mapping: coord@x
+                    match remap.mappings[0].axis.as_ref() {
+                        ASTNode::StrandAccess(access) => {
+                            match access.base.as_ref() {
+                                ASTNode::Var(v) => assert_eq!(v.name, "coord"),
+                                _ => panic!("Expected Var"),
+                            }
+                            match access.out.as_ref() {
+                                ASTNode::Var(v) => assert_eq!(v.name, "x"),
+                                _ => panic!("Expected Var"),
+                            }
+                        }
+                        _ => panic!("Expected StrandAccess for axis"),
+                    }
+                    // Second mapping: coord@y
+                    match remap.mappings[1].axis.as_ref() {
+                        ASTNode::StrandAccess(access) => {
+                            match access.base.as_ref() {
+                                ASTNode::Var(v) => assert_eq!(v.name, "coord"),
+                                _ => panic!("Expected Var"),
+                            }
+                            match access.out.as_ref() {
+                                ASTNode::Var(v) => assert_eq!(v.name, "y"),
+                                _ => panic!("Expected Var"),
+                            }
+                        }
+                        _ => panic!("Expected StrandAccess for axis"),
+                    }
+                }
+                _ => panic!("Expected StrandRemap"),
+            },
+            _ => panic!("Expected InstanceBinding"),
+        }
+    }
+
+    #[test]
+    fn test_strand_remap_complex_axis() {
+        let result = parse("x<a> = image@rgb(inst@r ~ newX)").unwrap();
+
+        match &result.statements[0] {
+            ASTNode::InstanceBinding(bind) => match bind.expr.as_ref() {
+                ASTNode::StrandRemap(remap) => {
+                    assert_eq!(remap.strand, "rgb");
+                    assert_eq!(remap.mappings.len(), 1);
+                    // Check that axis is a strand access
+                    match remap.mappings[0].axis.as_ref() {
+                        ASTNode::StrandAccess(access) => {
+                            match access.base.as_ref() {
+                                ASTNode::Var(v) => assert_eq!(v.name, "inst"),
+                                _ => panic!("Expected Var"),
+                            }
+                            match access.out.as_ref() {
+                                ASTNode::Var(v) => assert_eq!(v.name, "r"),
+                                _ => panic!("Expected Var"),
+                            }
+                        }
+                        _ => panic!("Expected StrandAccess for axis"),
+                    }
+                }
+                _ => panic!("Expected StrandRemap"),
+            },
+            _ => panic!("Expected InstanceBinding"),
+        }
+    }
+
+    #[test]
+    fn test_me_field_access() {
+        let result = parse("x<a> = me@width").unwrap();
+
+        match &result.statements[0] {
+            ASTNode::InstanceBinding(bind) => match bind.expr.as_ref() {
+                ASTNode::Me(me_expr) => {
+                    assert_eq!(me_expr.field, "width");
+                }
+                _ => panic!("Expected Me"),
+            },
+            _ => panic!("Expected InstanceBinding"),
+        }
+    }
+
+    #[test]
+    fn test_indexing() {
+        let result = parse("x<a> = arr[5]").unwrap();
+
+        match &result.statements[0] {
+            ASTNode::InstanceBinding(bind) => match bind.expr.as_ref() {
+                ASTNode::Index(index) => {
+                    match index.base.as_ref() {
+                        ASTNode::Var(v) => assert_eq!(v.name, "arr"),
+                        _ => panic!("Expected Var"),
+                    }
+                    match index.index.as_ref() {
+                        ASTNode::Num(n) => assert_eq!(n.v, 5.0),
+                        _ => panic!("Expected Num"),
+                    }
+                }
+                _ => panic!("Expected Index"),
+            },
+            _ => panic!("Expected InstanceBinding"),
         }
     }
 }
