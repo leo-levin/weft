@@ -1,14 +1,12 @@
 pub mod backend_registry;
+pub mod builtin_registry;
 pub mod builtins;
 pub mod coordinator;
 pub mod env;
+pub mod output_registry;
 pub mod render_graph;
 pub mod sampler;
 pub mod spindle;
-
 pub use coordinator::Coordinator;
 pub use env::Env;
-
-use crate::ast::Program;
-use crate::parser;
-use crate::utils::Result;
+pub use output_registry::OutputRegistry;
