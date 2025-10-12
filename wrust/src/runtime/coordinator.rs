@@ -217,3 +217,248 @@ fn context_to_str(context: &crate::runtime::backend_registry::Context) -> &'stat
         crate::runtime::backend_registry::Context::Compute => "compute",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::*;
+    use std::cell::Cell;
+
+    // Mock backend for testing
+    struct MockBackend {
+        context: &'static str,
+        compiled: Cell<bool>,
+        executed: Cell<bool>,
+        compile_count: Cell<usize>,
+        execute_count: Cell<usize>,
+    }
+
+    impl MockBackend {
+        fn new(context: &'static str) -> Self {
+            Self {
+                context,
+                compiled: Cell::new(false),
+                executed: Cell::new(false),
+                compile_count: Cell::new(0),
+                execute_count: Cell::new(0),
+            }
+        }
+    }
+
+    impl Backend for MockBackend {
+        fn context(&self) -> &str {
+            self.context
+        }
+
+        fn compile_nodes(
+            &mut self,
+            _nodes: &[&GraphNode],
+            _env: &Env,
+            _coordinator: &Coordinator,
+        ) -> Result<()> {
+            self.compiled.set(true);
+            self.compile_count.set(self.compile_count.get() + 1);
+            Ok(())
+        }
+
+        fn execute(&mut self, _env: &Env) -> Result<()> {
+            self.executed.set(true);
+            self.execute_count.set(self.execute_count.get() + 1);
+            Ok(())
+        }
+
+        fn get_handle(&self, instance: &str, output: &str) -> Result<OutputHandle> {
+            if instance == "test" && output == "buffer" {
+                Ok(OutputHandle::new(42u32, HandleType::Buffer))
+            } else if instance == "test" && output == "texture" {
+                Ok(OutputHandle::new(vec![1, 2, 3], HandleType::Texture))
+            } else if instance == "test" && output == "sampler" {
+                Ok(OutputHandle::new((), HandleType::Sampler))
+            } else {
+                Err(crate::WeftError::Runtime("Handle not found".into()))
+            }
+        }
+
+        fn get_value_at(
+            &self,
+            _instance: &str,
+            _output: &str,
+            _coords: &HashMap<String, f64>,
+        ) -> Result<f64> {
+            Ok(42.0)
+        }
+    }
+
+    fn empty_program() -> Program {
+        Program { statements: vec![] }
+    }
+
+    fn test_env() -> Env {
+        Env::new(800, 600)
+    }
+
+    #[test]
+    fn test_coordinator_new() {
+        let prog = empty_program();
+        let env = test_env();
+        let coord = Coordinator::new(prog, env);
+
+        assert_eq!(coord.backends.len(), 0);
+        assert_eq!(coord.running, false);
+    }
+
+    #[test]
+    fn test_add_backend() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+        coord.add_backend(Box::new(MockBackend::new("audio")));
+
+        assert_eq!(coord.backends.len(), 2);
+    }
+
+    #[test]
+    fn test_expose_and_lookup_buffer() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+
+        let handle = OutputHandle::new(123u32, HandleType::Buffer);
+        coord.expose("test", "buffer", handle, 0);
+
+        let result = coord.lookup("test", "buffer").unwrap();
+        match result {
+            DataReference::MetalBuffer(_) => (),
+            _ => panic!("Expected MetalBuffer"),
+        }
+    }
+
+    #[test]
+    fn test_expose_and_lookup_texture() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+
+        let handle = OutputHandle::new(vec![1, 2, 3], HandleType::Texture);
+        coord.expose("test", "texture", handle, 0);
+
+        let result = coord.lookup("test", "texture").unwrap();
+        match result {
+            DataReference::MetalTexture(_) => (),
+            _ => panic!("Expected MetalTexture"),
+        }
+    }
+
+    #[test]
+    fn test_lookup_sampler_rejects() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+
+        let handle = OutputHandle::new((), HandleType::Sampler);
+        coord.expose("test", "sampler", handle, 0);
+
+        let result = coord.lookup("test", "sampler");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lookup_value_getter_fallback() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+
+        // Expose without a handle (will fall back to value getter)
+        let handle = OutputHandle::new((), HandleType::Buffer);
+        coord.expose("test", "missing", handle, 0);
+
+        let result = coord.lookup("test", "missing").unwrap();
+        match result {
+            DataReference::ValueGetter(getter) => {
+                let coords = HashMap::new();
+                let value = getter(&coords);
+                assert_eq!(value, 42.0);
+            }
+            _ => panic!("Expected ValueGetter"),
+        }
+    }
+
+    #[test]
+    fn test_execute_before_compile_fails() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        let result = coord.execute();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compile_sets_running() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+
+        assert_eq!(coord.running, false);
+        coord.compile().unwrap();
+        assert_eq!(coord.running, true);
+    }
+
+    #[test]
+    fn test_execute_after_compile_succeeds() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+        coord.compile().unwrap();
+
+        let result = coord.execute();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_starts_timer_on_first_call() {
+        let prog = empty_program();
+        let env = test_env();
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+        coord.compile().unwrap();
+
+        assert_eq!(coord.env.start_time, 0.0);
+
+        coord.execute().unwrap();
+
+        assert!(coord.env.start_time > 0.0);
+    }
+
+    #[test]
+    fn test_execute_updates_counters() {
+        let prog = empty_program();
+        let mut env = test_env();
+        env.target_fps = 60.0;
+        let mut coord = Coordinator::new(prog, env);
+
+        coord.add_backend(Box::new(MockBackend::new("visual")));
+        coord.compile().unwrap();
+
+        coord.env.start();
+        coord.env.start_time -= 1.0; // Simulate 1 second ago
+
+        coord.execute().unwrap();
+        assert!(coord.env.absframe >= 59 && coord.env.absframe <= 61);
+    }
+}
