@@ -17,6 +17,9 @@ pub struct Env {
     pub spindles: HashMap<String, SpindleDef>,
 
     // music
+    pub sample_rate: f64,
+    pub sample: u64,
+    pub abssample: u64,
     pub tempo: f64,
     pub timesig_num: u32,
     pub timesig_denom: u32,
@@ -35,18 +38,32 @@ impl Env {
             target_fps: 60.0,
             loop_duration: 10.0,
             spindles: HashMap::new(),
+            sample_rate: 48000.0,
+            sample: 0,
+            abssample: 0,
             tempo: 120.0,
             timesig_num: 4,
             timesig_denom: 4,
         }
     }
 
-    pub fn time(&self) -> f64 {
-        self.abstime() % self.loop_duration
+    pub fn start(&mut self) {
+        self.start_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
     }
 
     pub fn abstime(&self) -> f64 {
-        todo!("implement time tracking")
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        now - self.start_time
+    }
+
+    pub fn time(&self) -> f64 {
+        self.abstime() % self.loop_duration
     }
 
     pub fn current_beat(&self) -> f64 {
@@ -63,5 +80,13 @@ impl Env {
 
     pub fn measure_phase(&self) -> f64 {
         self.current_measure() % 1.0
+    }
+    pub fn sync_counters(&mut self) {
+        let abs_time = self.abstime();
+        self.absframe = (abs_time * self.target_fps) as u64;
+        self.frame = (self.time() * self.target_fps) as u64;
+
+        self.abssample = (abs_time * self.sample_rate) as u64;
+        self.sample = (self.time() * self.sample_rate) as u64;
     }
 }

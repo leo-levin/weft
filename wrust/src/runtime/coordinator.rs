@@ -1,8 +1,8 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use crate::ast::{ASTNode, Program};
-use crate::backend::{Backend, DataReference, OutputHandle};
+use crate::backend::{Backend, DataReference, HandleType, OutputHandle};
 use crate::runtime::builtin_registry;
 use crate::runtime::env::Env;
 use crate::runtime::output_registry::OutputRegistry;
@@ -14,7 +14,7 @@ pub struct Coordinator {
     env: Env,
     graph: RenderGraph,
 
-    backends: Vec<RefCell<Box<dyn Backend>>>,
+    backends: Vec<Arc<Mutex<Box<dyn Backend>>>>,
     outputs: OutputRegistry,
     assignments: HashMap<String, usize>,
     exec_order: Vec<String>,
@@ -37,7 +37,7 @@ impl Coordinator {
     }
 
     pub fn add_backend(&mut self, backend: Box<dyn Backend>) {
-        self.backends.push(RefCell::new(backend));
+        self.backends.push(Arc::new(Mutex::new(backend)));
     }
 
     pub fn expose(
@@ -52,19 +52,43 @@ impl Coordinator {
 
     pub fn lookup(&self, instance: &str, output: &str) -> Result<DataReference> {
         let location = self.outputs.get(instance, output)?;
-        let owner = self.backends[location.backend_index].borrow();
+        let backend_idx = location.backend_index;
 
-        // Try handle path first (Metal-to-Metal fast path)
-        if let Ok(handle) = owner.get_handle(instance, output) {
-            // TODO: Distinguish between MetalBuffer and MetalTexture
-            return Ok(DataReference::MetalBuffer(handle.downcast::<()>().unwrap()));
+        // Fast path: Get handle from backend (GPU-to-GPU zero-copy transfer)
+        {
+            let owner = self.backends[backend_idx].lock().unwrap();
+            if let Ok(handle) = owner.get_handle(instance, output) {
+                // Use HandleType to choose the correct DataReference variant
+                let handle_type = handle.handle_type();
+                let inner = handle.into_any();
+
+                return Ok(match handle_type {
+                    HandleType::Buffer => DataReference::MetalBuffer(inner),
+                    HandleType::Texture => DataReference::MetalTexture(inner),
+                    HandleType::Sampler => {
+                        return Err(crate::WeftError::Runtime(
+                            "Sampler handles cannot be used as data references".into(),
+                        ));
+                    }
+                });
+            }
         }
 
-        // Fall back to value getter (compatibility path)
-        // TODO: Implement value getter wrapper around get_value_at
-        Err(crate::WeftError::Runtime(
-            "Value getter not yet implemented".into(),
-        ))
+        // Slow path: Create ValueGetter for CPU evaluation
+        // This wraps get_value_at in a closure for per-pixel evaluation
+        let backend = Arc::clone(&self.backends[backend_idx]);
+        let instance_name = instance.to_string();
+        let output_name = output.to_string();
+
+        let value_getter = Arc::new(move |coords: &HashMap<String, f64>| -> f64 {
+            backend
+                .lock()
+                .unwrap()
+                .get_value_at(&instance_name, &output_name, coords)
+                .unwrap_or(0.0) // Return 0.0 on error (could log warning)
+        });
+
+        Ok(DataReference::ValueGetter(value_getter))
     }
 
     pub fn compile(&mut self) -> Result<()> {
@@ -81,7 +105,8 @@ impl Coordinator {
                 .filter_map(|name| self.graph.get_node(name))
                 .collect();
             self.backends[backend_idx]
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .compile_nodes(&nodes, &self.env, self)?;
         }
 
@@ -131,7 +156,7 @@ impl Coordinator {
         context: &crate::runtime::backend_registry::Context,
     ) -> Result<usize> {
         for (idx, backend) in self.backends.iter().enumerate() {
-            if backend.borrow().context() == context_to_str(context) {
+            if backend.lock().unwrap().context() == context_to_str(context) {
                 return Ok(idx);
             }
         }
@@ -162,6 +187,26 @@ impl Coordinator {
         }
 
         batches
+    }
+
+    pub fn execute(&mut self) -> Result<()> {
+        if !self.running {
+            return Err(crate::WeftError::Runtime(
+                "Cannot execute: program not compiled yet".into(),
+            ));
+        }
+
+        if self.env.start_time == 0.0 {
+            self.env.start();
+        }
+
+        self.env.sync_counters();
+
+        for backend in &self.backends {
+            backend.lock().unwrap().execute(&self.env)?;
+        }
+
+        Ok(())
     }
 }
 

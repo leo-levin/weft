@@ -3,4 +3,4 @@ pub mod mac_audio;
 pub mod mac_visual;
 pub mod types;
 
-pub use types::{Backend, DataReference, OutputHandle};
+pub use types::{Backend, DataReference, HandleType, OutputHandle};

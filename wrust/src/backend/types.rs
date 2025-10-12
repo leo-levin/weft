@@ -6,24 +6,37 @@ use crate::runtime::render_graph::GraphNode;
 use crate::runtime::Env;
 use crate::utils::Result;
 
-/// Type-erased handle to backend output data (Metal buffers, textures, etc.)
-///
-/// Backends can store any type they need (Arc<metal::Buffer>, Arc<metal::Texture>, etc.)
-/// and the coordinator routes these handles between backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleType {
+    Buffer,
+    Texture,
+    Sampler,
+}
+
 #[derive(Clone)]
 pub struct OutputHandle {
     inner: Arc<dyn Any + Send + Sync>,
+    handle_type: HandleType,
 }
 
 impl OutputHandle {
-    pub fn new<T: Any + Send + Sync>(value: T) -> Self {
+    pub fn new<T: Any + Send + Sync>(value: T, handle_type: HandleType) -> Self {
         Self {
             inner: Arc::new(value),
+            handle_type,
         }
+    }
+
+    pub fn handle_type(&self) -> HandleType {
+        self.handle_type
     }
 
     pub fn downcast<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
         self.inner.clone().downcast::<T>().ok()
+    }
+
+    pub fn into_any(self) -> Arc<dyn Any + Send + Sync> {
+        self.inner
     }
 }
 
