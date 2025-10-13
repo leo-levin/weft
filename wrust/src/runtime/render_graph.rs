@@ -6,7 +6,7 @@ use crate::Env;
 use crate::WeftError;
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::{DfsPostOrder, EdgeRef, Reversed};
+use petgraph::visit::{DfsPostOrder, EdgeFiltered, EdgeRef, IntoNeighbors, IntoNodeIdentifiers, Reversed, Visitable};
 use petgraph::Direction;
 use std::collections::{HashMap, HashSet};
 
@@ -46,6 +46,7 @@ pub struct RenderGraph {
 
 #[derive(Debug)]
 pub struct Subgraph {
+    pub id: usize,
     pub context: Context,
     pub graph: DiGraph<GraphNode, ()>,
     pub node_names: Vec<String>,
@@ -54,17 +55,17 @@ pub struct Subgraph {
 
 #[derive(Debug, Clone)]
 pub struct Reference {
-    pub from_context: Context,
+    pub from_subgraph: usize,
     pub from_node: String,
-    pub to_context: Context,
+    pub to_subgraph: usize,
     pub to_node: String,
 }
 
 #[derive(Debug)]
 pub struct MetaGraph {
-    pub subgraphs: HashMap<Context, Subgraph>,
-    pub context_dag: DiGraph<Context, ()>,
-    pub execution_order: Vec<Context>,
+    pub subgraphs: Vec<Subgraph>,
+    pub subgraph_dag: DiGraph<usize, ()>,
+    pub execution_order: Vec<usize>,
     pub references: Vec<Reference>,
 }
 
@@ -592,17 +593,17 @@ impl RenderGraph {
     }
     fn build_meta_graph(&self) -> Result<MetaGraph> {
         let (subgraphs, references) = self.extract_subgraphs()?;
-        let (context_dag, execution_order) = self.build_context_dag(&subgraphs, &references)?;
+        let (subgraph_dag, execution_order) = self.build_subgraph_dag(&subgraphs, &references)?;
 
         Ok(MetaGraph {
             subgraphs,
-            context_dag,
+            subgraph_dag,
             execution_order,
             references,
         })
     }
 
-    fn extract_subgraphs(&self) -> Result<(HashMap<Context, Subgraph>, Vec<Reference>)> {
+    fn extract_subgraphs(&self) -> Result<(Vec<Subgraph>, Vec<Reference>)> {
         let mut nodes_by_context: HashMap<Context, Vec<NodeIndex>> = HashMap::new();
 
         for idx in self.graph.node_indices() {
@@ -611,130 +612,179 @@ impl RenderGraph {
             }
         }
 
-        let mut subgraphs = HashMap::new();
-        let mut references = Vec::new();
+        let mut subgraphs = Vec::new();
+        let mut node_to_subgraph: HashMap<NodeIndex, usize> = HashMap::new();
+        let mut subgraph_id = 0;
 
+        // For each context, find connected components
         for (context, node_indices) in nodes_by_context {
-            let mut subgraph = DiGraph::new();
-            let mut old_to_new = HashMap::new();
-            let mut node_names = Vec::new();
+            let components = self.find_connected_components_in_context(&node_indices);
 
-            for &old_idx in &node_indices {
-                let node = self.graph[old_idx].clone();
-                node_names.push(node.instance_name.clone());
-                let new_idx = subgraph.add_node(node);
-                old_to_new.insert(old_idx, new_idx);
-            }
+            for component in components {
+                let mut subgraph = DiGraph::new();
+                let mut old_to_new = HashMap::new();
+                let mut node_names = Vec::new();
 
-            for &old_idx in &node_indices {
-                for edge in self.graph.edges(old_idx) {
-                    match edge.weight() {
-                        EdgeType::Normal => {
+                // Add all nodes in this component
+                for &old_idx in &component {
+                    let node = self.graph[old_idx].clone();
+                    node_names.push(node.instance_name.clone());
+                    let new_idx = subgraph.add_node(node);
+                    old_to_new.insert(old_idx, new_idx);
+                    node_to_subgraph.insert(old_idx, subgraph_id);
+                }
+
+                // Add edges within this component
+                for &old_idx in &component {
+                    for edge in self.graph.edges(old_idx) {
+                        if edge.weight() == &EdgeType::Normal {
                             if let (Some(&src), Some(&tgt)) =
                                 (old_to_new.get(&old_idx), old_to_new.get(&edge.target()))
                             {
                                 subgraph.add_edge(src, tgt, ());
                             }
                         }
-                        EdgeType::Reference => {
-                            let from_node = &self.graph[old_idx].instance_name;
-                            let to_node = &self.graph[edge.target()].instance_name;
-
-                            // Skip edges to untyped nodes (dead code)
-                            if let Some(to_context) = self.graph[edge.target()].context {
-                                // Reference semantics: from_context (dependent) references to_context (provider)
-                                // Edge direction: provider_node -> dependent_node
-                                // So we swap: the dependent is to_context, provider is context
-                                references.push(Reference {
-                                    from_context: to_context, // the dependent context
-                                    from_node: to_node.clone(),
-                                    to_context: context, // the provider context
-                                    to_node: from_node.clone(),
-                                });
-                            }
-                        }
                     }
                 }
-            }
 
-            let execution_order = toposort(&subgraph, None)
-                .map_err(|_| WeftError::Runtime(format!("Cycle in {} subgraph", context.name())))?
-                .into_iter()
-                .map(|idx| subgraph[idx].instance_name.clone())
-                .collect();
+                let execution_order = toposort(&subgraph, None)
+                    .map_err(|_| {
+                        WeftError::Runtime(format!(
+                            "Cycle in {} subgraph #{}",
+                            context.name(),
+                            subgraph_id
+                        ))
+                    })?
+                    .into_iter()
+                    .map(|idx| subgraph[idx].instance_name.clone())
+                    .collect();
 
-            subgraphs.insert(
-                context,
-                Subgraph {
+                subgraphs.push(Subgraph {
+                    id: subgraph_id,
                     context,
                     graph: subgraph,
                     node_names,
                     execution_order,
-                },
-            );
+                });
+
+                subgraph_id += 1;
+            }
+        }
+
+        // Build references using subgraph IDs
+        let mut references = Vec::new();
+        for idx in self.graph.node_indices() {
+            for edge in self.graph.edges(idx) {
+                if edge.weight() == &EdgeType::Reference {
+                    let from_node = &self.graph[idx].instance_name;
+                    let to_node = &self.graph[edge.target()].instance_name;
+
+                    if let (Some(&from_sg), Some(&to_sg)) = (
+                        node_to_subgraph.get(&idx),
+                        node_to_subgraph.get(&edge.target()),
+                    ) {
+                        // Edge direction: provider -> dependent
+                        // Reference: dependent references provider
+                        references.push(Reference {
+                            from_subgraph: to_sg,    // dependent
+                            from_node: to_node.clone(),
+                            to_subgraph: from_sg,    // provider
+                            to_node: from_node.clone(),
+                        });
+                    }
+                }
+            }
         }
 
         Ok((subgraphs, references))
     }
 
-    fn build_context_dag(
+    fn find_connected_components_in_context(&self, nodes: &[NodeIndex]) -> Vec<Vec<NodeIndex>> {
+        let mut visited = HashSet::new();
+        let mut components = Vec::new();
+        let node_set: HashSet<NodeIndex> = nodes.iter().copied().collect();
+
+        for &start in nodes {
+            if visited.contains(&start) {
+                continue;
+            }
+
+            let mut component = Vec::new();
+            let mut stack = vec![start];
+
+            while let Some(node_idx) = stack.pop() {
+                if visited.contains(&node_idx) {
+                    continue;
+                }
+
+                visited.insert(node_idx);
+                component.push(node_idx);
+
+                // Follow Normal edges only (not Reference edges) within the same context
+                for edge in self.graph.edges(node_idx) {
+                    if edge.weight() == &EdgeType::Normal {
+                        let target = edge.target();
+                        if node_set.contains(&target) && !visited.contains(&target) {
+                            stack.push(target);
+                        }
+                    }
+                }
+
+                // Also check incoming edges
+                for edge in self
+                    .graph
+                    .edges_directed(node_idx, petgraph::Direction::Incoming)
+                {
+                    if edge.weight() == &EdgeType::Normal {
+                        let source = edge.source();
+                        if node_set.contains(&source) && !visited.contains(&source) {
+                            stack.push(source);
+                        }
+                    }
+                }
+            }
+
+            components.push(component);
+        }
+
+        components
+    }
+
+    fn build_subgraph_dag(
         &self,
-        subgraphs: &HashMap<Context, Subgraph>,
+        subgraphs: &[Subgraph],
         references: &[Reference],
-    ) -> Result<(DiGraph<Context, ()>, Vec<Context>)> {
-        let mut context_dag = DiGraph::new();
-        let mut ctx_to_idx = HashMap::new();
+    ) -> Result<(DiGraph<usize, ()>, Vec<usize>)> {
+        let mut subgraph_dag = DiGraph::new();
+        let mut sg_id_to_idx = HashMap::new();
 
-        for &ctx in subgraphs.keys() {
-            let idx = context_dag.add_node(ctx);
-            ctx_to_idx.insert(ctx, idx);
+        for subgraph in subgraphs {
+            let idx = subgraph_dag.add_node(subgraph.id);
+            sg_id_to_idx.insert(subgraph.id, idx);
         }
 
-        // First pass: collect all edges and identify bidirectional dependencies
-        let mut edge_map: HashMap<(Context, Context), Vec<&Reference>> = HashMap::new();
-        for reference in references {
-            let edge = (reference.from_context, reference.to_context);
-            edge_map.entry(edge).or_default().push(reference);
-        }
-
-        // Second pass: add edges, breaking cycles using priority
+        // Add edges from references (dependent -> provider becomes provider -> dependent in DAG)
         let mut added_edges = HashSet::new();
         for reference in references {
-            let edge = (reference.from_context, reference.to_context);
-            let reverse_edge = (reference.to_context, reference.from_context);
-
-            // Skip if we've already added this edge
+            let edge = (reference.from_subgraph, reference.to_subgraph);
             if added_edges.contains(&edge) {
                 continue;
             }
 
-            // If both directions exist, only add the one where the provider has higher priority
-            if edge_map.contains_key(&reverse_edge) && !added_edges.contains(&reverse_edge) {
-                // Provider context has higher priority (lower ordinal value) = should run first
-                // Edge direction: to_context -> from_context means from_context depends on to_context
-                // So to_context is the provider
-                //
-                // Only add this edge if the provider (to_context) has higher priority than the dependent (from_context)
-                // Higher priority = lower ordinal value
-                if reference.to_context as u8 > reference.from_context as u8 {
-                    // The provider has LOWER priority, so skip this edge
-                    continue;
-                }
-            }
-
-            let from_idx = ctx_to_idx[&reference.from_context];
-            let to_idx = ctx_to_idx[&reference.to_context];
-            context_dag.add_edge(to_idx, from_idx, ());
+            let from_idx = sg_id_to_idx[&reference.from_subgraph]; // dependent
+            let to_idx = sg_id_to_idx[&reference.to_subgraph];     // provider
+            // Edge: provider -> dependent (provider must run first)
+            subgraph_dag.add_edge(to_idx, from_idx, ());
             added_edges.insert(edge);
         }
 
-        let execution_order = toposort(&context_dag, None)
-            .map_err(|_| WeftError::Runtime("Circular dependency between contexts".to_string()))?
+        let execution_order = toposort(&subgraph_dag, None)
+            .map_err(|_| WeftError::Runtime("Circular dependency between subgraphs".to_string()))?
             .into_iter()
-            .map(|idx| context_dag[idx])
+            .map(|idx| subgraph_dag[idx])
             .collect();
 
-        Ok((context_dag, execution_order))
+        Ok((subgraph_dag, execution_order))
     }
 }
 
@@ -894,6 +944,26 @@ mod tests {
         Env::new(800, 600)
     }
 
+    fn find_subgraph_by_context<'a>(meta: &'a MetaGraph, context: Context) -> Option<&'a Subgraph> {
+        meta.subgraphs.iter().find(|sg| sg.context == context)
+    }
+
+    fn has_context(meta: &MetaGraph, context: Context) -> bool {
+        meta.subgraphs.iter().any(|sg| sg.context == context)
+    }
+
+    fn get_context_from_execution(meta: &MetaGraph, index: usize) -> Context {
+        meta.subgraphs[meta.execution_order[index]].context
+    }
+
+    fn has_reference_between_contexts(meta: &MetaGraph, from: Context, to: Context) -> bool {
+        meta.references.iter().any(|r| {
+            let from_sg_ctx = meta.subgraphs[r.from_subgraph].context;
+            let to_sg_ctx = meta.subgraphs[r.to_subgraph].context;
+            from_sg_ctx == from && to_sg_ctx == to
+        })
+    }
+
     #[test]
     fn test_empty_program() {
         let mut graph = RenderGraph::new();
@@ -917,9 +987,9 @@ mod tests {
         assert!(result.is_ok());
         let meta = result.unwrap();
         assert_eq!(meta.subgraphs.len(), 1);
-        assert!(meta.subgraphs.contains_key(&Context::Visual));
+        assert!(has_context(&meta, Context::Visual));
         assert_eq!(meta.execution_order.len(), 1);
-        assert_eq!(meta.execution_order[0], Context::Visual);
+        assert_eq!(get_context_from_execution(&meta, 0), Context::Visual);
         assert!(meta.references.is_empty());
     }
 
@@ -936,7 +1006,7 @@ mod tests {
         let result = graph.build(&prog, &env);
         assert!(result.is_ok());
         let meta = result.unwrap();
-        let visual = &meta.subgraphs[&Context::Visual];
+        let visual = find_subgraph_by_context(&meta, Context::Visual).unwrap();
         assert_eq!(visual.execution_order.len(), 3);
         assert_eq!(visual.execution_order[0], "a");
         assert_eq!(visual.execution_order[1], "b");
@@ -957,8 +1027,8 @@ mod tests {
         assert!(result.is_ok());
         let meta = result.unwrap();
         assert_eq!(meta.subgraphs.len(), 2);
-        assert!(meta.subgraphs.contains_key(&Context::Visual));
-        assert!(meta.subgraphs.contains_key(&Context::Audio));
+        assert!(has_context(&meta, Context::Visual));
+        assert!(has_context(&meta, Context::Audio));
         assert!(meta.references.is_empty());
     }
 
@@ -977,12 +1047,12 @@ mod tests {
         assert!(result.is_ok());
         let meta = result.unwrap();
         assert_eq!(meta.subgraphs.len(), 2);
-        let visual = &meta.subgraphs[&Context::Visual];
+        let visual = find_subgraph_by_context(&meta, Context::Visual).unwrap();
         assert!(visual
             .node_names
             .iter()
             .any(|n| n.contains("shared") && n.contains("visual")));
-        let audio = &meta.subgraphs[&Context::Audio];
+        let audio = find_subgraph_by_context(&meta, Context::Audio).unwrap();
         assert!(audio
             .node_names
             .iter()
@@ -1009,13 +1079,10 @@ mod tests {
         let meta = result.unwrap();
         assert_eq!(meta.subgraphs.len(), 2);
         assert!(!meta.references.is_empty());
-        let ref_exists = meta
-            .references
-            .iter()
-            .any(|r| r.from_context == Context::Audio && r.to_context == Context::Visual);
+        let ref_exists = has_reference_between_contexts(&meta, Context::Audio, Context::Visual);
         assert!(ref_exists, "Expected Audio -> Visual reference");
-        assert_eq!(meta.execution_order[0], Context::Visual);
-        assert_eq!(meta.execution_order[1], Context::Audio);
+        assert_eq!(get_context_from_execution(&meta, 0), Context::Visual);
+        assert_eq!(get_context_from_execution(&meta, 1), Context::Audio);
     }
 
     #[test]
@@ -1031,14 +1098,27 @@ mod tests {
         ]);
         let env = test_env();
         let result = graph.build(&prog, &env);
+        if let Err(e) = &result {
+            eprintln!("Error in test_audio_visual_audio_chain: {:?}", e);
+        }
         assert!(result.is_ok());
         let meta = result.unwrap();
-        assert!(meta.subgraphs.contains_key(&Context::Audio));
-        assert!(meta.subgraphs.contains_key(&Context::Visual));
-        let audio = &meta.subgraphs[&Context::Audio];
-        assert!(audio.node_names.contains(&"audio1".to_string()));
-        assert!(audio.node_names.contains(&"audio2".to_string()));
-        let visual = &meta.subgraphs[&Context::Visual];
+
+        // Should have 3 subgraphs: Audio#1, Visual, Audio#2
+        assert_eq!(meta.subgraphs.len(), 3);
+        assert!(has_context(&meta, Context::Audio));
+        assert!(has_context(&meta, Context::Visual));
+
+        // Check all nodes are present across subgraphs
+        let all_audio_names: Vec<_> = meta.subgraphs
+            .iter()
+            .filter(|sg| sg.context == Context::Audio)
+            .flat_map(|sg| &sg.node_names)
+            .collect();
+        assert!(all_audio_names.contains(&&"audio1".to_string()));
+        assert!(all_audio_names.contains(&&"audio2".to_string()));
+
+        let visual = find_subgraph_by_context(&meta, Context::Visual).unwrap();
         assert!(visual.node_names.contains(&"visual".to_string()));
     }
 
@@ -1056,7 +1136,7 @@ mod tests {
         let result = graph.build(&prog, &env);
         assert!(result.is_ok());
         let meta = result.unwrap();
-        let visual = &meta.subgraphs[&Context::Visual];
+        let visual = find_subgraph_by_context(&meta, Context::Visual).unwrap();
         let pos = |name: &str| {
             visual
                 .execution_order
@@ -1084,7 +1164,7 @@ mod tests {
         let result = graph.build(&prog, &env);
         assert!(result.is_ok());
         let meta = result.unwrap();
-        let visual = &meta.subgraphs[&Context::Visual];
+        let visual = find_subgraph_by_context(&meta, Context::Visual).unwrap();
         assert_eq!(visual.execution_order, vec!["a", "b", "c", "d", "e"]);
     }
 
@@ -1129,8 +1209,8 @@ mod tests {
         let result = graph.build(&prog, &env);
         assert!(result.is_ok());
         let meta = result.unwrap();
-        let visual = &meta.subgraphs[&Context::Visual];
-        let audio = &meta.subgraphs[&Context::Audio];
+        let visual = find_subgraph_by_context(&meta, Context::Visual).unwrap();
+        let audio = find_subgraph_by_context(&meta, Context::Audio).unwrap();
         assert!(visual.node_names.iter().any(|n| n.contains("base")));
         assert!(audio.node_names.iter().any(|n| n.contains("base")));
         assert!(meta.references.is_empty());
@@ -1153,12 +1233,12 @@ mod tests {
         let visual_pos = meta
             .execution_order
             .iter()
-            .position(|&c| c == Context::Visual)
+            .position(|&subgraph_id| meta.subgraphs[subgraph_id].context == Context::Visual)
             .unwrap();
         let audio_pos = meta
             .execution_order
             .iter()
-            .position(|&c| c == Context::Audio)
+            .position(|&subgraph_id| meta.subgraphs[subgraph_id].context == Context::Audio)
             .unwrap();
         assert!(visual_pos < audio_pos);
     }
