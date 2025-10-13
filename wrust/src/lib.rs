@@ -4,6 +4,7 @@ pub mod value;
 pub mod utils;
 pub mod runtime;
 pub mod backend;
+pub mod engines;
 
 pub use ast::*;
 pub use parser::*;
