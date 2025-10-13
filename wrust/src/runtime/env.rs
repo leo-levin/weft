@@ -1,6 +1,7 @@
 use crate::ast::SpindleDef;
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub struct Env {
     // display
     pub res_w: u32,

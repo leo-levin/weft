@@ -18,3 +18,20 @@ pub fn get_context(backend_keyword: &str) -> Option<Context> {
 pub fn is_valid_backend(keyword: &str) -> bool {
     get_context(keyword).is_some()
 }
+
+impl Context {
+    pub fn name(&self) -> &str {
+        match self {
+            Context::Visual => "Visual",
+            Context::Audio => "Audio",
+            Context::Compute => "Compute",
+        }
+    }
+    pub fn priority(&self) -> u32 {
+        match self {
+            Context::Visual => 0, // Highest priority
+            Context::Audio => 1,
+            Context::Compute => 2, // Lowest priority
+        }
+    }
+}

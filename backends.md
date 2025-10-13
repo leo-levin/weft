@@ -1,668 +1,325 @@
-# WEFT Rust Architecture: Coordinator & Backend Model
+# WEFT Backend Architecture
 
-## Core Principles
+## Overview
 
-### 1. WEFT is Domain-Agnostic
+WEFT's backend system enables context-agnostic code to execute efficiently across different output types (visual, audio, compute) and execution strategies (CPU interpreter, GPU shaders).
 
-Every strand (me@x, foo@out1, me@time) represents values over the real numbers. There are no inherent "spatial" or "temporal" types - data can flow anywhere.
+**Core concepts:**
 
-### 2. Backends are Extensible
-
-Current: MacVisualBackend (Metal), MacAudioBackend (Metal)
-Future: OSC, MIDI, File Export, Data Export, etc.
-
-Not all backends use Metal shared memory, but those that do can share efficiently.
-
-### 3. Apple Unified Memory is THE Reason for macOS/Metal
-
-**This is the entire architectural motivation:**
-
-- Metal buffers/textures live in unified memory
-- Both GPU and CPU can access the same memory directly
-- Zero-copy sharing between backends
-- Audio backend produces Metal buffer → Visual backend binds it directly into shaders
-- Visual backend produces Metal texture → OSC backend reads pixels directly via CPU
-
-**Performance characteristics (Apple Silicon unified memory):**
-
-- Full 4K texture CPU read: ~0.3-0.6ms
-- Full 8K texture CPU read: ~1.3-2.6ms
-- Individual pixel read: ~10-200ns (hot/cold cache)
-- Metal buffer access: ~10-50ns
-
-For non-Metal backends (OSC, file export), they can READ Metal data via CPU mapping of unified memory - still fast!
-
-### 4. Explicit Cross-Domain Access
-
-Users control how data crosses domains via strand remapping syntax:
-
-```weft
-audio<samples> = mic()                              // Audio: 1D temporal buffer
-img<r> = audio@samples[me@time ~ me@x * 10]        // Visual samples audio over space
-```
+1. **Render Graph** - Analyzes AST, partitions subgraphs, computes execution order
+2. **Coordinator** - Routes subgraphs to backends in dependency order
+3. **Backends** - Compile and execute subgraphs
 
 ---
 
-## Context Tagging
+## Core Philosophy
 
-The RenderGraph tags nodes with contexts by walking backwards from backend statements:
+**Context-agnostic code is a feature.**
 
 ```weft
-sound<intensity> = mic()
-viz<out> = me.x * sound@intensity
-display(viz@out)
+noise<val> = sin(me@x * 10)
+
+display(noise@val, 0, 0)  // Visual
+audio(noise@val)          // Audio
+haptic(noise@val)         // Haptic
 ```
 
-Context tagging:
+Each backend optimizes `noise` for its context:
 
-- `display()` → Visual backend
-- `viz` is used by display → tag `viz` with Visual
-- `sound` is used by viz → tag `sound` with Visual
+- Visual: GPU shader
+- Audio: Bytecode VM
+- Haptic: Native code
 
-**Context tags mean "who needs this data"**, not "who produces it".
-
-A node can have multiple contexts if used by multiple backends.
+**Cross-context value passing is fast** (function calls in shared memory on M1).
 
 ---
 
-## Node Assignment
+## 1. Render Graph (Does the Heavy Lifting)
 
-**Rule:** First backend to use a node (by source order) compiles it.
+**Pipeline:**
 
-### Special Case: Builtins
-
-Builtins always go to their natural backend regardless of context tags:
-
-- `mic()` → MacAudioBackend
-- `load()`, `camera()` → MacVisualBackend
-- etc.
-
-### Non-Builtins (Expressions, Spindles)
-
-Go to the first backend that needs them (by source order):
-
-```weft
-img<r> = sin(me@x) + 0.5 * me@y
-samp<x> = img@r[me@x ~ mouse@x, me@y ~ mouse@y]
-play(sin(me@time * 880 * samp@x))  // Audio needs img (via samp) - FIRST
-display(img@r)                      // Visual needs img - second
+```
+AST → Dependencies → Context Tagging → Subgraph Partitioning → Topological Sort → Execution Order
 ```
 
-Since `play()` appears first in source, **Audio backend compiles `img`**.
+### Context Tagging
 
-The first backend produces data in its native domain (Audio → 1D buffer over time).
-Other backends adapt by explicit coordinate remappings.
+Nodes inherit context from their consumers:
 
----
+- `display(val@x, 0, 0)` → `val` gets Visual context
+- `audio(val@x)` → `val` gets Audio context
 
-## Compilation Flow
+### Subgraph Partitioning
 
-### 1. Build Render Graph
+Group connected nodes sharing the same context:
 
-```rust
-graph.build(&ast, &env)?;
-let exec_order = graph.topo_sort()?;
-```
+- Each subgraph = one context
+- Intra-subgraph: Direct references
+- Cross-subgraph: Coordinator lookup
 
-Produces:
+### Execution Order
 
-- Dependency graph of nodes
-- Context tags (who needs what)
-- Topologically sorted execution order
+**Key insight: Execution order is at SUBGRAPH level.**
 
-### 2. Assign Nodes to Backends
-
-For each node in topological order:
-
-- If builtin → assign to natural backend
-- Else → assign to first backend that needs it (by context + source order)
-
-### 3. Batch Compile in Topological Order
-
-**The coordinator batches consecutive nodes for the same backend while respecting dependencies:**
-
-```rust
-// Walk topo-sorted nodes and batch by backend
-let mut batches: Vec<(usize, Vec<&GraphNode>)> = Vec::new();
-let mut current_backend = None;
-let mut current_batch = Vec::new();
-
-for node_name in exec_order {
-    let backend_idx = self.assignments[&node_name];
-
-    if Some(backend_idx) != current_backend {
-        // Backend changed - flush current batch
-        if !current_batch.is_empty() {
-            batches.push((current_backend.unwrap(), current_batch));
-            current_batch = Vec::new();
-        }
-        current_backend = Some(backend_idx);
-    }
-
-    current_batch.push(self.graph.get_node(&node_name).unwrap());
-}
-
-// Flush final batch
-if !current_batch.is_empty() {
-    batches.push((current_backend.unwrap(), current_batch));
-}
-
-// Compile batches in order
-for (backend_idx, nodes) in batches {
-    self.backends[backend_idx].compile_nodes(&nodes, &self.env, self)?;
-}
-```
-
-**Key:**
-
-- Batching allows backends to optimize compilation of related nodes together
-- Topological order guarantees cross-backend dependencies are ready
-- Cannot batch ALL nodes per backend (might flip-flop between backends)
+Topological sort ensures dependencies execute before consumers.
 
 **Example:**
 
 ```weft
-audio<s> = mic()              // Audio
-img1<r> = sin(me@x)           // Visual
-img2<g> = cos(me@y)           // Visual
-samp<x> = audio@s[...]        // Visual
-processed<p> = fx(img1@r)     // Audio
-display(processed@p)
+a<val> = expensive()           // CPU context
+b<val> = a@val * 2             // Visual context (depends on a)
+c<val> = a@val + b@val         // CPU context (depends on a, b)
+compute(c@val)
 ```
 
-**Topo order:** `[audio, img1, img2, samp, processed]`
+**Graph produces:**
 
-**Batched compilation:**
+```
+Subgraph A: context=CPU,    nodes=[a], deps=[]
+Subgraph B: context=Visual, nodes=[b], deps=[A]
+Subgraph C: context=CPU,    nodes=[c], deps=[A,B]
 
-1. AudioBackend.compile_nodes([audio])
-2. VisualBackend.compile_nodes([img1, img2, samp]) ← Batched!
-3. AudioBackend.compile_nodes([processed])
-
-Visual backend can optimize img1 and img2 together since they're consecutive!
-
-### 4. Backends Expose Outputs
-
-When a backend compiles a node, it:
-
-1. Produces data in its native domain
-   - Audio → 1D Metal buffer over time
-   - Visual → 2D Metal texture over space
-   - OSC → (send-only, no outputs to expose)
-2. Exposes output to coordinator:
-   ```rust
-   coordinator.expose("img", "r", OutputHandle::new(texture));
-   ```
-
-### 5. Pre-wire Cross-Backend Connections (CRITICAL FOR PERFORMANCE)
-
-**The coordinator can predict all inter-backend queries at compile time.**
-
-When a backend compiles a node with dependencies on other backends:
-
-```rust
-// Visual compiling: img = audio@samples[me@time ~ me@x]
-fn compile_node(&mut self, node: &GraphNode, coordinator: &Coordinator) {
-    // Lookup dependency at compile time
-    let data_ref = coordinator.lookup("audio", "samples")?;
-
-    // Coordinator returns optimal access method based on backend types
-    match data_ref {
-        DataReference::MetalBuffer(buffer) => {
-            // Fast path: bind buffer directly into shader
-            self.audio_buffer = buffer;
-            compile_shader_with_buffer_binding();
-        }
-        DataReference::ValueGetter(getter) => {
-            // Compatibility path: read values on demand
-            self.getters.insert("audio.samples", getter);
-        }
-    }
-}
+Execution order: [A, B, C]
 ```
 
-**At runtime:**
-
-```rust
-fn execute(&mut self) {
-    // Zero coordinator queries!
-    // Just use pre-wired references
-    command_encoder.set_buffer(0, &self.audio_buffer);
-    // Or: let val = self.getters["key"].get_value(coords);
-}
-```
-
-**Zero runtime overhead** - all connections established during compilation.
+**Coordinator executes:** A on CPU → B on Visual → C on CPU
 
 ---
 
-## Cross-Backend Data Sharing
+## 2. Coordinator (Simple Router)
 
-### The Two Paths
-
-**Path 1: Direct Handle Access (Metal ↔ Metal)**
-
-When both backends use Metal, they share buffer/texture handles directly:
+**Data structures:**
 
 ```rust
-// Audio exposes
-coordinator.expose("audio", "samples", OutputHandle::new(metal_buffer));
-
-// Visual looks up
-let data_ref = coordinator.lookup("audio", "samples")?;
-let buffer = data_ref.as_metal_buffer()?;
-// Bind directly into shader - zero copy!
-```
-
-**Path 2: Value Access (Any ↔ Any)**
-
-When backends need individual values (OSC, CPU, or cross-domain):
-
-```rust
-// Visual exposes texture
-coordinator.expose("img", "r", OutputHandle::new(texture));
-
-// OSC looks up
-let data_ref = coordinator.lookup("img", "r")?;
-// Coordinator provides value getter
-let value = data_ref.get_value(&coords)?; // Reads via unified memory
-```
-
-**Both paths are fast** thanks to unified memory!
-
-### Coordinator Decides Path
-
-The coordinator automatically selects the optimal access method:
-
-```rust
-impl Coordinator {
-    pub fn lookup(&self, instance: &str, output: &str) -> Result<DataReference> {
-        let owner_idx = self.find_owner(instance)?;
-        let owner_backend = &self.backends[owner_idx];
-
-        // Coordinator knows both backend types
-        // Returns appropriate reference type
-        if both_are_metal() {
-            DataReference::MetalHandle(owner_backend.get_handle(...))
-        } else {
-            DataReference::ValueGetter(Box::new(move |coords| {
-                owner_backend.get_value_at(coords)
-            }))
-        }
-    }
-}
-```
-
-Backends just call `coordinator.lookup()` - coordinator handles optimization.
-
----
-
-## Communication Pattern: expose / lookup
-
-Backends communicate through coordinator using two methods:
-
-### expose (Backend → Coordinator)
-
-"Here's my output data"
-
-```rust
-impl Backend {
-    fn compile_node(&mut self, coordinator: &mut Coordinator) {
-        self.create_buffer();
-        coordinator.expose("audio", "samples", OutputHandle::new(self.buffer.clone()));
-    }
-}
-```
-
-### lookup (Backend ← Coordinator)
-
-"I need this input data"
-
-```rust
-impl Backend {
-    fn compile_node(&mut self, coordinator: &Coordinator) {
-        let audio_ref = coordinator.lookup("audio", "samples")?;
-        // Use the reference...
-    }
-}
-```
-
-**Key properties:**
-
-- All communication goes through coordinator (N relationships, not N²)
-- Coordinator never copies data - just routes Arc/references
-- Happens at compile time - zero runtime queries
-
----
-
-## Standard Inter-Backend Data Type
-
-All outputs ultimately produce scalar values:
-
-```rust
-pub type Value = f64;
-```
-
-This is WEFT's universal scalar type - all strands produce `f64` values.
-
-For vector data (RGB, stereo audio), use multiple outputs:
-
-```weft
-img<r, g, b> = load("cat.jpg")  // Three outputs, each f64
-```
-
----
-
-## Backend Trait Design
-
-```rust
-pub trait Backend {
-    /// What context does this backend handle?
-    fn context(&self) -> Context;
-
-    /// Compile a batch of nodes (called in topological order)
-    /// Batching allows backend to optimize compilation of related nodes
-    /// Can call coordinator.lookup() for dependencies
-    fn compile_nodes(
-        &mut self,
-        nodes: &[&GraphNode],
-        env: &Env,
-        coordinator: &Coordinator,
-    ) -> Result<()>;
-
-    /// Get raw handle to output (for Metal-to-Metal fast path)
-    fn get_handle(&self, instance: &str, output: &str) -> Result<OutputHandle>;
-
-    /// Get value at specific coordinates (for compatibility path)
-    fn get_value_at(&self, instance: &str, output: &str, coords: &HashMap<String, f64>) -> Result<Value>;
-
-    /// Execute one frame/iteration
-    /// All dependencies are pre-wired, no coordinator queries
-    fn execute(&mut self, env: &Env) -> Result<()>;
-
-    /// Cleanup resources
-    fn cleanup(&mut self) {}
-}
-```
-
-**Note:** Not all backends implement both `get_handle()` and `get_value_at()`:
-
-- Metal backends: implement both
-- OSC/export backends: only implement `get_value_at()` (or neither if send-only)
-- Coordinator handles the routing
-
----
-
-## Data Reference Types
-
-```rust
-pub enum DataReference {
-    /// Direct Metal buffer/texture handle (zero-copy binding)
-    MetalBuffer(Arc<metal::Buffer>),
-    MetalTexture(Arc<metal::Texture>),
-
-    /// Value getter function (for compatibility/CPU access)
-    ValueGetter(Box<dyn Fn(&HashMap<String, f64>) -> Value + Send + Sync>),
-}
-
-pub struct OutputHandle {
-    inner: Arc<dyn Any + Send + Sync>,
-}
-
-impl OutputHandle {
-    pub fn new<T: Any + Send + Sync>(value: T) -> Self {
-        Self { inner: Arc::new(value) }
-    }
-
-    pub fn downcast<T: Any + Send + Sync>(&self) -> Option<Arc<T>> {
-        self.inner.clone().downcast::<T>().ok()
-    }
-}
-```
-
-Type-erased handles allow each backend to store whatever format it needs.
-
----
-
-## Output Registry
-
-Coordinator maintains registry of all outputs:
-
-```rust
-pub struct OutputLocation {
-    instance: String,
-    output: String,
-    backend_index: usize,
-    handle: OutputHandle,  // Type-erased: Arc<dyn Any>
-}
-
-pub struct OutputRegistry {
-    outputs: HashMap<String, OutputLocation>, // "instance.output" -> location
-}
-```
-
----
-
-## Coordinator Structure
-
-```rust
-pub struct Coordinator {
-    ast: Program,
-    env: Env,
+struct Coordinator {
     graph: RenderGraph,
-
-    // Backends (owned)
     backends: Vec<Box<dyn Backend>>,
-
-    // Output registry: "instance.output" -> location
-    outputs: OutputRegistry,
-
-    // Node assignments: node_name -> backend_index
-    assignments: HashMap<String, usize>,
-
-    // Lifecycle
-    running: bool,
+    subgraphs: Vec<Subgraph>,           // From graph
+    execution_order: Vec<usize>,        // From graph
+    registry: HashMap<String, usize>,   // "instance@output" -> backend_idx
 }
 
-impl Coordinator {
-    pub fn compile(&mut self) -> Result<()> {
-        // 1. Build graph
-        self.graph.build(&self.ast, &self.env)?;
-        let exec_order = self.graph.topo_sort()?;
-
-        // 2. Assign nodes to backends
-        self.assign_nodes(&exec_order)?;
-
-        // 3. Compile nodes in topological order
-        for node_name in exec_order {
-            let node = self.graph.get_node(&node_name).unwrap();
-            let backend_idx = self.assignments[&node_name];
-
-            // Backend compiles, may call coordinator.lookup() for deps
-            self.backends[backend_idx].compile_node(node, &self.env, self)?;
-        }
-
-        Ok(())
-    }
-
-    /// Backend calls this to expose output
-    pub fn expose(&mut self, instance: &str, output: &str, handle: OutputHandle, backend_idx: usize) {
-        self.outputs.register(instance, output, handle, backend_idx);
-    }
-
-    /// Backend calls this to lookup input
-    pub fn lookup(&self, instance: &str, output: &str) -> Result<DataReference> {
-        let location = self.outputs.get(instance, output)?;
-        let backend = &self.backends[location.backend_index];
-
-        // Coordinator decides optimal path based on backend capabilities
-        // Returns appropriate DataReference variant
-        // ...
-    }
-
-    pub fn execute(&mut self) -> Result<()> {
-        self.env.frame += 1;
-
-        // Execute all backends in topological order
-        for backend in &mut self.backends {
-            backend.execute(&self.env)?;
-        }
-
-        Ok(())
-    }
+struct Subgraph {
+    id: usize,
+    context: Context,
+    nodes: Vec<GraphNode>,
+    depends_on: Vec<usize>,
 }
 ```
 
----
-
-## Example Trace
-
-```weft
-audio<samples> = mic()
-img<r> = audio@samples[me@time ~ me@x * 10]
-display(img@r)
-```
-
-### Compilation:
-
-**1. Build graph:**
-
-- Nodes: `audio`, `img`
-- Topo order: `[audio, img]`
-- Context tags: `audio={Visual}`, `img={Visual}` (both needed by display)
-
-**2. Assign:**
-
-- `audio` (mic builtin) → MacAudioBackend (index 0)
-- `img` (expression, Visual context) → MacVisualBackend (index 1)
-
-**3. Compile batches:**
-
-Batched compilation based on topo order:
-
-- Batch 1: AudioBackend gets [audio]
-- Batch 2: VisualBackend gets [img]
+### Compilation
 
 ```rust
-// Batch 1: Audio backend
-MacAudioBackend.compile_nodes([audio_node], coordinator):
-    - Set up microphone input stream
-    - Create Metal buffer for samples (unified memory!)
-    - coordinator.expose("audio", "samples", OutputHandle::new(buffer), 0)
+// 1. Build graph
+(subgraphs, execution_order) = graph.build(&ast, &env)
 
-// Batch 2: Visual backend
-MacVisualBackend.compile_nodes([img_node], coordinator):
-    - Parse expression: audio@samples[me@time ~ me@x * 10]
-    - data_ref = coordinator.lookup("audio", "samples")?
-        → Coordinator sees: Audio (Metal) → Visual (Metal)
-        → Returns DataReference::MetalBuffer(buffer_arc)
-    - Store buffer: self.audio_buffer = buffer_arc
-    - Generate Metal shader:
-        kernel void render_img(
-            device float* audio_buffer [[buffer(0)]],
-            texture2d<float> output [[texture(0)]]
-        ) {
-            float x = coords.x;
-            float time_idx = x * 10.0;
-            float value = audio_buffer[int(time_idx)];
-            output.write(value, coords);
-        }
-    - Create output texture
-    - coordinator.expose("img", "r", OutputHandle::new(texture), 1)
+// 2. Assign backends by context
+for subgraph in subgraphs {
+    subgraph.backend = find_backend(subgraph.context)
+}
+
+// 3. Compile in execution order
+for sg_id in execution_order {
+    subgraph = subgraphs[sg_id]
+    backend = backends[subgraph.backend]
+    backend.compile_subgraph(subgraph, env, coordinator)
+}
 ```
 
-### Execution (each frame):
+### Execution
 
-**1. MacAudioBackend.execute():**
+```rust
+for sg_id in execution_order {
+    subgraph = subgraphs[sg_id]
+    backend = backends[subgraph.backend]
+    backend.execute_subgraph(subgraph, env, coordinator)
+}
+```
 
-- Fill Metal buffer with new mic samples
-- No coordinator queries
+### Registry
 
-**2. MacVisualBackend.execute():**
+Maps outputs to owning backends:
 
-- Set buffer binding: `command_encoder.set_buffer(0, &self.audio_buffer)`
-- Dispatch shader
-- Shader reads directly from audio Metal buffer (unified memory!)
-- Produces output texture
-- Display texture to screen
-- No coordinator queries
-
-**Zero overhead** - all connections pre-wired during compilation.
-
----
-
-## Performance Characteristics
-
-### Compile Time:
-
-- ✅ Graph analysis: O(nodes + edges)
-- ✅ Backend compilation: O(nodes) with Metal shader compilation
-- ✅ Dependency resolution: O(dependencies)
-
-### Runtime (per frame):
-
-- ✅ Zero coordinator lookups (all pre-wired)
-- ✅ Zero memory copies (unified memory)
-- ✅ Direct buffer bindings (Metal-to-Metal)
-- ✅ Fast value reads when needed (10-200ns per pixel)
-- ✅ Metal kernel dispatch overhead only
-
-**The coordinator predicts all inter-backend queries at compile time and pre-wires everything.**
+- Populated during compilation via `expose()`
+- Used during evaluation via `lookup()`
 
 ---
 
-## Design Decisions
+## 3. Backend Trait
 
-### 1. Two Access Paths
+```rust
+trait Backend {
+    fn context(&self) -> &str;
 
-Both exist, coordinator chooses automatically:
+    fn compile_subgraph(&mut self, subgraph: &Subgraph, env: &Env,
+                        coordinator: &mut Coordinator) -> Result<()>;
 
-- **Fast path**: Metal handle binding (zero runtime cost)
-- **Compatibility path**: Value getters (10-200ns per read)
+    fn execute_subgraph(&mut self, subgraph: &Subgraph, env: &Env,
+                        coordinator: &Coordinator) -> Result<()>;
 
-Both are performant on Apple Silicon unified memory.
+    fn get_value_at(&self, instance: &str, output: &str,
+                    coords: &HashMap<String, f64>, env: &Env,
+                    coordinator: &Coordinator) -> Result<f64>;
 
-### 2. Topological Execution Order
+    fn get_handle(&self, instance: &str, output: &str) -> Result<Handle> {
+        Err(WeftError::Runtime("No handle".into()))
+    }
+}
+```
 
-Backends execute in dependency order (from graph).
-This guarantees all dependencies exist before they're needed:
+**Backend types:**
 
-- OSC reading texture → texture already rendered
-- No "evaluation on demand" needed
+- **Output**: VisualCPU, VisualMetal, AudioCPU, AudioMetal
+- **Compute**: CPUBackend (bytecode VM, fallback for any context)
 
-### 3. Multiple Outputs (Tuples)
+**Coordinator calls backend once per subgraph assigned to it.**
+
+---
+
+## Cross-Context Value Passing
+
+### Expose (Compilation)
+
+Backend registers outputs with coordinator:
+
+```rust
+coordinator.expose("noise", "val", self.context());
+// Coordinator: registry["noise@val"] = backend_idx
+```
+
+### Lookup (Evaluation)
+
+Backend requests value from coordinator:
+
+```rust
+let data_ref = coordinator.lookup("noise", "val")?;
+match data_ref {
+    ValueGetter(f) => f(&coords, env, coordinator),  // CPU function call
+    Handle(h) => /* GPU handle */
+}
+```
+
+### Performance on M1
+
+| Lookup    | Speed   | Why                            |
+| --------- | ------- | ------------------------------ |
+| CPU → CPU | Fast    | Function call in shared memory |
+| GPU → GPU | Instant | Zero-copy handle passing       |
+| CPU → GPU | Medium  | Per-pixel function calls       |
+| GPU → CPU | Slow    | Synchronization + readback     |
+
+**Key: No memory transfer cost on M1 unified memory.**
+
+---
+
+## Subgraph Optimization
+
+**Without subgraphs:**
 
 ```weft
-foo<x, y, z> = (1, 2, 3)
+noise<val> = sin(me@x * 10)
+bright<val> = noise@val * 0.5
+display(bright@val, 0, 0)
 ```
 
-Creates three separate outputs: `foo@x`, `foo@y`, `foo@z`.
-Each exposed independently to coordinator.
+→ 3 evaluations + 2 lookups per pixel
 
-### 4. No Runtime Sampling
+**With subgraphs:**
 
-Backends do **not** query each other during execute().
-All cross-backend connections established during compile().
-Execute() just uses pre-wired references.
+Backend receives all three nodes together:
+→ Inline everything into single shader/bytecode
+→ 1 evaluation, 0 lookups per pixel
+
+### Optimization Examples
+
+**Inlining:**
+
+```glsl
+// From: display(bright@val, 0, 0), bright=noise*0.5, noise=sin(x*10)
+// To:
+vec3(sin(coords.x * 10.0) * 0.5, 0, 0)
+```
+
+**Common Subexpression Elimination:**
+
+```weft
+a<val> = expensive()
+b<val> = a@val + 1
+c<val> = a@val + 2
+display(b@val, c@val, 0)
+```
+
+→ Evaluate `a@val` once, reuse for both `b` and `c`
+
+**Frame-constant Hoisting:**
+
+```weft
+time_wave<val> = sin(me@time)
+display(time_wave@val, 0, 0)
+```
+
+→ Evaluate once per frame, pass as uniform
+→ 1 eval/frame instead of width×height evals/frame
 
 ---
 
-## Open Questions
+## Extensibility
 
-1. **Spindle compilation:** How are user-defined spindles compiled?
+### Adding a Backend
 
-   - Inline into calling expressions?
-   - Separate functions?
+```rust
+struct HapticCPUBackend {
+    vm_cache: HashMap<String, Bytecode>,
+    buffer: Vec<f32>,
+}
 
-2. **Error handling:** How are runtime errors surfaced?
+impl Backend for HapticCPUBackend {
+    fn context(&self) -> &str { "haptic" }
 
-   - Metal shader failures?
-   - Audio buffer underruns?
+    fn compile_subgraph(&mut self, subgraph, env, coordinator) {
+        // Compile to bytecode, call coordinator.expose()
+    }
 
-3. **Hot reloading:** Can we recompile without recreating all backends?
+    fn execute_subgraph(&mut self, subgraph, env, coordinator) {
+        // Generate haptic samples
+    }
 
-   - Keep Metal device/context?
-   - Just recompile shaders?
+    fn get_value_at(&self, instance, output, coords, env, coord) -> f64 {
+        // Evaluate on-demand
+    }
+}
 
-4. **Debug introspection:** How to inspect intermediate values?
-   - Debug backend that logs all exposed outputs?
-   - Special debug display mode?
+// Register
+coordinator.add_backend(Box::new(HapticCPUBackend::new()));
+
+// Use
+haptic(noise@val)  // Automatically routed!
+```
+
+No changes to coordinator, graph, or other backends required.
+
+---
+
+## Summary
+
+### Division of Responsibility
+
+| Component        | Responsibility                                |
+| ---------------- | --------------------------------------------- |
+| **Render Graph** | Analyze, partition, compute execution order   |
+| **Coordinator**  | Route subgraphs to backends, manage lookups   |
+| **Backend**      | Compile/execute subgraphs, respond to lookups |
+
+### Key Design Decisions
+
+- **Subgraph-level execution** (not node or backend level)
+- **Graph does heavy lifting** (coordinator is thin router)
+- **Backends optimize within subgraphs** (inlining, CSE, hoisting)
+- **Lookup via closures** (clean abstraction)
+- **M1 unified memory** (no transfer overhead)
+
+### Trade-offs
+
+- Cross-backend per-pixel lookups slower than same-backend
+- Subgraph granularity affects optimization opportunities
+- Graph complexity (topological sort, cycle detection)

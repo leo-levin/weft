@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+/*use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::PathBuf;
 use wrust::{parser, Env, WeftError};
@@ -120,7 +120,12 @@ fn print_node(node: &wrust::ASTNode, indent: usize) {
             }
         }
         wrust::ASTNode::InstanceBinding(bind) => {
-            println!("{}Instance: {} <{}>", ind, bind.name, bind.outputs.join(", "));
+            println!(
+                "{}Instance: {} <{}>",
+                ind,
+                bind.name,
+                bind.outputs.join(", ")
+            );
             print_node(&bind.expr, indent + 1);
         }
         wrust::ASTNode::SpindleDef(def) => {
@@ -278,7 +283,8 @@ fn cmd_graph(file: PathBuf, show_order: bool, verbose: bool) -> Result<(), WeftE
                 }
 
                 if !node.contexts.is_empty() {
-                    let contexts: Vec<_> = node.contexts.iter().map(|c| format!("{:?}", c)).collect();
+                    let contexts: Vec<_> =
+                        node.contexts.iter().map(|c| format!("{:?}", c)).collect();
                     print!(" [{}]", contexts.join(", "));
                 }
 
@@ -308,7 +314,12 @@ fn cmd_graph(file: PathBuf, show_order: bool, verbose: bool) -> Result<(), WeftE
                 };
 
                 let outputs: Vec<String> = node.outputs.keys().map(|s| s.to_string()).collect();
-                println!("{} <{}> ({})", node.instance_name, outputs.join(", "), node_type);
+                println!(
+                    "{} <{}> ({})",
+                    node.instance_name,
+                    outputs.join(", "),
+                    node_type
+                );
 
                 if !node.deps.is_empty() {
                     let deps: Vec<String> = node.deps.iter().map(|s| s.to_string()).collect();
@@ -316,12 +327,17 @@ fn cmd_graph(file: PathBuf, show_order: bool, verbose: bool) -> Result<(), WeftE
                 }
 
                 if !node.required_outputs.is_empty() {
-                    let req: Vec<String> = node.required_outputs.iter().map(|s| s.to_string()).collect();
+                    let req: Vec<String> = node
+                        .required_outputs
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
                     println!("  required outputs: {}", req.join(", "));
                 }
 
                 if !node.contexts.is_empty() {
-                    let contexts: Vec<_> = node.contexts.iter().map(|c| format!("{:?}", c)).collect();
+                    let contexts: Vec<_> =
+                        node.contexts.iter().map(|c| format!("{:?}", c)).collect();
                     println!("  contexts: {}", contexts.join(", "));
                 }
 
@@ -432,24 +448,160 @@ fn cmd_info(file: PathBuf) -> Result<(), WeftError> {
 }
 
 fn cmd_run(file: PathBuf, width: u32, height: u32, fps: f64) -> Result<(), WeftError> {
+    use minifb::{Window, WindowOptions};
+
     let source = read_file(file.clone())?;
-    let _ast =
+    let ast =
         parser::parse(&source).map_err(|e| WeftError::Runtime(format!("Parse error: {}", e)))?;
 
     println!("Running WEFT program: {:?}", file);
     println!("Canvas: {}x{}, Target FPS: {}", width, height, fps);
     println!();
 
-    let mut _env = Env::new(width, height);
-    _env.target_fps = fps;
+    let mut env = Env::new(width, height);
+    env.target_fps = fps;
 
-    println!("⚠ Backend implementations not yet available");
-    println!("The program parsed successfully but cannot execute yet.");
+    // Extract display() statement from AST
+    let mut display_args: Option<(wrust::ASTNode, wrust::ASTNode, wrust::ASTNode)> = None;
+    for stmt in &ast.statements {
+        if let wrust::ASTNode::Backend(backend_expr) = stmt {
+            if backend_expr.context == "display" && backend_expr.positional_args.len() >= 3 {
+                display_args = Some((
+                    backend_expr.positional_args[0].clone(),
+                    backend_expr.positional_args[1].clone(),
+                    backend_expr.positional_args[2].clone(),
+                ));
+                println!("Found display() statement");
+                break;
+            }
+        }
+    }
+
+    // Create coordinator and register backends
+    let mut coordinator = wrust::runtime::Coordinator::new(ast, env);
+
+    // Register CPU backend (context: "visual")
+    // We'll need to access it later, so keep a shared reference
+    use std::sync::{Arc, Mutex};
+    let cpu_backend_shared = Arc::new(Mutex::new(wrust::backend::cpu::CPUBackend::new(
+        width, height,
+    )));
+
+    // Set display expressions if found
+    if let Some((r, g, b)) = display_args {
+        cpu_backend_shared.lock().unwrap().set_display(r, g, b);
+        println!("Configured display channels");
+    }
+
+    // Create a wrapper that implements Backend
+    struct BackendWrapper {
+        inner: Arc<Mutex<wrust::backend::cpu::CPUBackend>>,
+    }
+
+    impl wrust::backend::Backend for BackendWrapper {
+        fn context(&self) -> &str {
+            "visual"
+        }
+
+        fn compile_nodes(
+            &mut self,
+            nodes: &[&wrust::runtime::render_graph::GraphNode],
+            env: &wrust::runtime::Env,
+            coordinator: &wrust::runtime::Coordinator,
+        ) -> wrust::utils::Result<()> {
+            self.inner
+                .lock()
+                .unwrap()
+                .compile_nodes(nodes, env, coordinator)
+        }
+
+        fn execute(
+            &mut self,
+            env: &wrust::runtime::Env,
+            coordinator: &wrust::runtime::Coordinator,
+        ) -> wrust::utils::Result<()> {
+            self.inner.lock().unwrap().execute(env, coordinator)
+        }
+
+        fn get_value_at(
+            &self,
+            instance: &str,
+            output: &str,
+            coords: &std::collections::HashMap<String, f64>,
+            env: &wrust::runtime::Env,
+            coordinator: &wrust::runtime::Coordinator,
+        ) -> wrust::utils::Result<f64> {
+            self.inner
+                .lock()
+                .unwrap()
+                .get_value_at(instance, output, coords, env, coordinator)
+        }
+    }
+
+    let cpu_backend_for_coordinator = Arc::clone(&cpu_backend_shared);
+    coordinator.add_backend(Box::new(BackendWrapper {
+        inner: cpu_backend_for_coordinator,
+    }));
+
+    println!("✓ Registered CPU backend");
+
+    // Compile the program
+    coordinator.compile()?;
+    println!("✓ Compiled successfully");
+
+    // Create window
+    let mut window = Window::new(
+        "WEFT Output",
+        width as usize,
+        height as usize,
+        WindowOptions::default(),
+    )
+    .map_err(|e| WeftError::Runtime(format!("Failed to create window: {}", e)))?;
+
+    println!("✓ Created window");
     println!();
-    println!("To run this program, backends need to be implemented:");
-    println!("  - CPU backend (wrust/src/backend/cpu.rs)");
-    println!("  - Mac Visual backend (wrust/src/backend/mac_visual.rs)");
-    println!("  - Mac Audio backend (wrust/src/backend/mac_audio.rs)");
+    println!("Window is open! Close it to exit.");
+
+    // Frame timing
+    use std::time::Instant;
+    let mut frame_count = 0u64;
+    let mut total_frame_time = 0.0f64;
+    let mut last_print = Instant::now();
+
+    // Display loop - re-render each frame
+    while window.is_open() {
+        let frame_start = Instant::now();
+
+        // Execute the coordinator (updates timing and renders)
+        coordinator.execute()?;
+
+        // Get buffer from backend and display
+        let buffer = cpu_backend_shared.lock().unwrap().buffer.clone();
+        window
+            .update_with_buffer(&buffer, width as usize, height as usize)
+            .map_err(|e| WeftError::Runtime(format!("Failed to update window: {}", e)))?;
+
+        // Track frame timing
+        let frame_time = frame_start.elapsed().as_secs_f64();
+        frame_count += 1;
+        total_frame_time += frame_time;
+
+        // Print stats every second
+        if last_print.elapsed().as_secs_f64() >= 1.0 {
+            let avg_frame_time = total_frame_time / frame_count as f64;
+            let avg_fps = 1.0 / avg_frame_time;
+            println!(
+                "Frame: {:.2}ms ({:.1} fps avg over {} frames)",
+                avg_frame_time * 1000.0,
+                avg_fps,
+                frame_count
+            );
+            frame_count = 0;
+            total_frame_time = 0.0;
+            last_print = Instant::now();
+        }
+    }
 
     Ok(())
 }
+*/
