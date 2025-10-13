@@ -1,4 +1,5 @@
 use super::backend_registry::{self, Context};
+use super::builtin_registry;
 use crate::ast::{ASTNode, BackendExpr, Program};
 use crate::utils::Result;
 use crate::Env;
@@ -174,6 +175,21 @@ impl RenderGraph {
     }
 
     fn phase0_initial_typing(&mut self, ast: &Program, env: &Env) -> Result<()> {
+        // Phase 0a: Type inherent builtins from builtin_registry
+        let all_nodes: Vec<NodeIndex> = self.graph.node_indices().collect();
+        for node_idx in all_nodes {
+            let node = &self.graph[node_idx];
+            if node.node_type == NodeType::Builtin {
+                // Extract builtin name from the Call expression
+                if let Some(builtin_name) = self.extract_builtin_name(node) {
+                    if let Some(context) = builtin_registry::get_builtin_context(&builtin_name) {
+                        self.graph[node_idx].context = Some(context);
+                    }
+                }
+            }
+        }
+
+        // Phase 0b: Type from backend statements
         for stmt in &ast.statements {
             if let ASTNode::Backend(backend) = stmt {
                 let context = backend_registry::get_context(&backend.context).ok_or_else(|| {
@@ -241,6 +257,18 @@ impl RenderGraph {
 
     pub fn get_node(&self, name: &str) -> Option<&GraphNode> {
         self.node_indices.get(name).map(|&idx| &self.graph[idx])
+    }
+
+    fn extract_builtin_name(&self, node: &GraphNode) -> Option<String> {
+        // Look through all outputs to find a Call expression
+        for expr in node.outputs.values() {
+            if let ASTNode::Call(call) = expr {
+                if let ASTNode::Var(var) = &*call.name {
+                    return Some(var.name.clone());
+                }
+            }
+        }
+        None
     }
 
     fn phase1_type_propagation(&mut self) -> Result<()> {
@@ -328,19 +356,28 @@ impl RenderGraph {
                 continue;
             }
 
-            let component = self.find_untyped_component(start_node, &mut visited);
+            let (component, has_typed_dep) = self.find_untyped_component(start_node, &mut visited);
             let target_contexts = self.find_component_target_contexts(&component);
 
-            if target_contexts.len() == 1 {
-                let context = *target_contexts.iter().next().unwrap();
+            if has_typed_dep {
+                // Cannot duplicate - has dependencies on typed nodes
+                // Choose context from typed dep or first target
+                let chosen = self.pick_context(&component, &target_contexts);
                 for &node_idx in &component {
-                    self.graph[node_idx].context = Some(context);
+                    self.graph[node_idx].context = Some(chosen);
                 }
             } else if target_contexts.len() > 1 {
+                // Can duplicate - no typed dependencies
                 for &node_idx in &component {
                     let node_name = self.graph[node_idx].instance_name.clone();
                     self.duplicate_into
                         .insert(node_name, target_contexts.clone());
+                }
+            } else if target_contexts.len() == 1 {
+                // Single context, just assign
+                let context = *target_contexts.iter().next().unwrap();
+                for &node_idx in &component {
+                    self.graph[node_idx].context = Some(context);
                 }
             }
         }
@@ -353,10 +390,11 @@ impl RenderGraph {
         &self,
         start: NodeIndex,
         visited: &mut HashSet<NodeIndex>,
-    ) -> Vec<NodeIndex> {
+    ) -> (Vec<NodeIndex>, bool) {
         let mut component = Vec::new();
         let mut stack = vec![start];
 
+        // First pass: find all connected untyped nodes
         while let Some(node_idx) = stack.pop() {
             if visited.contains(&node_idx) {
                 continue;
@@ -376,7 +414,21 @@ impl RenderGraph {
             }
         }
 
-        component
+        // Second pass: check if any node in component has typed dependencies
+        let mut has_typed_dep = false;
+        for &node_idx in &component {
+            for dependency in self.graph.neighbors_directed(node_idx, Direction::Incoming) {
+                if self.graph[dependency].context.is_some() {
+                    has_typed_dep = true;
+                    break;
+                }
+            }
+            if has_typed_dep {
+                break;
+            }
+        }
+
+        (component, has_typed_dep)
     }
 
     fn find_component_target_contexts(&self, component: &[NodeIndex]) -> HashSet<Context> {
@@ -391,6 +443,24 @@ impl RenderGraph {
         }
 
         contexts
+    }
+
+    fn pick_context(&self, component: &[NodeIndex], targets: &HashSet<Context>) -> Context {
+        // Find first typed dependency's context
+        for &node_idx in component {
+            for dependency in self.graph.neighbors_directed(node_idx, Direction::Incoming) {
+                if let Some(ctx) = self.graph[dependency].context {
+                    return ctx;
+                }
+            }
+        }
+
+        // Fallback to first target, prioritized by context priority
+        targets
+            .iter()
+            .min_by_key(|ctx| ctx.priority())
+            .copied()
+            .unwrap_or(Context::Compute)
     }
 
     fn create_duplicates(&mut self) -> Result<()> {
