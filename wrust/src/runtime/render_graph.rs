@@ -1,14 +1,61 @@
 use super::backend_registry::{self, Context};
 use super::builtin_registry;
-use crate::ast::{ASTNode, BackendExpr, Program};
+use crate::ast::{ASTNode, AxisMapping, Program};
 use crate::utils::Result;
 use crate::Env;
 use crate::WeftError;
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::{DfsPostOrder, EdgeFiltered, EdgeRef, IntoNeighbors, IntoNodeIdentifiers, Reversed, Visitable};
+use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use std::collections::{HashMap, HashSet};
+
+// Expression visitor trait for traversing AST expressions
+trait ExprVisitor {
+    fn visit_strand_access(&mut self, base: &ASTNode, out: &ASTNode);
+    fn visit_strand_remap(&mut self, base: &ASTNode, strand: &str, mappings: &[AxisMapping]);
+}
+
+fn walk_expr<V: ExprVisitor>(expr: &ASTNode, visitor: &mut V) {
+    match expr {
+        ASTNode::StrandAccess(access) => {
+            visitor.visit_strand_access(&access.base, &access.out);
+        }
+        ASTNode::StrandRemap(remap) => {
+            visitor.visit_strand_remap(&remap.base, &remap.strand, &remap.mappings);
+            for mapping in &remap.mappings {
+                walk_expr(&mapping.expr, visitor);
+            }
+        }
+        ASTNode::Binary(bin) => {
+            walk_expr(&bin.left, visitor);
+            walk_expr(&bin.right, visitor);
+        }
+        ASTNode::Unary(un) => {
+            walk_expr(&un.expr, visitor);
+        }
+        ASTNode::Call(call) => {
+            for arg in &call.args {
+                walk_expr(arg, visitor);
+            }
+        }
+        ASTNode::If(if_expr) => {
+            walk_expr(&if_expr.condition, visitor);
+            walk_expr(&if_expr.then_expr, visitor);
+            walk_expr(&if_expr.else_expr, visitor);
+        }
+        ASTNode::Tuple(tuple) => {
+            for item in &tuple.items {
+                walk_expr(item, visitor);
+            }
+        }
+        ASTNode::Index(index) => {
+            walk_expr(&index.base, visitor);
+            walk_expr(&index.index, visitor);
+        }
+        _ => {}
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeType {
@@ -69,6 +116,15 @@ pub struct MetaGraph {
     pub references: Vec<Reference>,
 }
 
+// Helper to determine edge type based on contexts
+fn edge_type_between(ctx1: Option<Context>, ctx2: Option<Context>) -> EdgeType {
+    if ctx1 == ctx2 {
+        EdgeType::Normal
+    } else {
+        EdgeType::Reference
+    }
+}
+
 impl RenderGraph {
     pub fn new() -> Self {
         Self {
@@ -83,7 +139,6 @@ impl RenderGraph {
         self.collect_instances(ast, env)?;
         self.build_initial_edges();
         self.phase0_initial_typing(ast, env)?;
-        self.phase1_type_propagation()?;
         self.phase2_find_and_process_untyped_components()?;
         self.phase3_build_typed_edges()?;
         self.build_meta_graph()
@@ -175,7 +230,7 @@ impl RenderGraph {
         }
     }
 
-    fn phase0_initial_typing(&mut self, ast: &Program, env: &Env) -> Result<()> {
+    fn phase0_initial_typing(&mut self, ast: &Program, _env: &Env) -> Result<()> {
         // Phase 0a: Type inherent builtins from builtin_registry
         let all_nodes: Vec<NodeIndex> = self.graph.node_indices().collect();
         for node_idx in all_nodes {
@@ -206,48 +261,35 @@ impl RenderGraph {
     }
 
     fn type_expr_as(&mut self, expr: &ASTNode, context: Context) {
-        match expr {
-            ASTNode::StrandAccess(access) => {
-                if let ASTNode::Var(var) = &*access.base {
-                    self.type_node(&var.name, context);
-                }
-            }
-            ASTNode::StrandRemap(remap) => {
-                if let ASTNode::Var(var) = &*remap.base {
-                    self.type_node(&var.name, context);
-                }
-                for mapping in &remap.mappings {
-                    self.type_expr_as(&mapping.expr, context);
-                }
-            }
-            ASTNode::Binary(bin) => {
-                self.type_expr_as(&bin.left, context);
-                self.type_expr_as(&bin.right, context);
-            }
-            ASTNode::Unary(un) => {
-                self.type_expr_as(&un.expr, context);
-            }
-            ASTNode::Call(call) => {
-                for arg in &call.args {
-                    self.type_expr_as(arg, context);
-                }
-            }
-            ASTNode::If(if_expr) => {
-                self.type_expr_as(&if_expr.condition, context);
-                self.type_expr_as(&if_expr.then_expr, context);
-                self.type_expr_as(&if_expr.else_expr, context);
-            }
-            ASTNode::Tuple(tuple) => {
-                for item in &tuple.items {
-                    self.type_expr_as(item, context);
-                }
-            }
-            ASTNode::Index(index) => {
-                self.type_expr_as(&index.base, context);
-                self.type_expr_as(&index.index, context);
-            }
-            _ => {}
+        struct TypeAssigner<'a> {
+            graph: &'a mut RenderGraph,
+            context: Context,
         }
+
+        impl<'a> ExprVisitor for TypeAssigner<'a> {
+            fn visit_strand_access(&mut self, base: &ASTNode, _out: &ASTNode) {
+                if let ASTNode::Var(var) = base {
+                    self.graph.type_node(&var.name, self.context);
+                }
+            }
+
+            fn visit_strand_remap(
+                &mut self,
+                base: &ASTNode,
+                _strand: &str,
+                _mappings: &[AxisMapping],
+            ) {
+                if let ASTNode::Var(var) = base {
+                    self.graph.type_node(&var.name, self.context);
+                }
+            }
+        }
+
+        let mut visitor = TypeAssigner {
+            graph: self,
+            context,
+        };
+        walk_expr(expr, &mut visitor);
     }
 
     fn type_node(&mut self, name: &str, context: Context) {
@@ -270,77 +312,6 @@ impl RenderGraph {
             }
         }
         None
-    }
-
-    fn phase1_type_propagation(&mut self) -> Result<()> {
-        // Phase 1a: Bottom-up propagation (from dependents to dependencies)
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let all_nodes: Vec<NodeIndex> = self.graph.node_indices().collect();
-
-            for node_idx in all_nodes {
-                if self.graph[node_idx].context.is_some() {
-                    continue;
-                }
-
-                let dependents: Vec<NodeIndex> = self
-                    .graph
-                    .neighbors_directed(node_idx, Direction::Outgoing)
-                    .collect();
-
-                if dependents.is_empty() {
-                    continue;
-                }
-
-                let dependent_contexts: HashSet<Context> = dependents
-                    .iter()
-                    .filter_map(|&idx| self.graph[idx].context)
-                    .collect();
-
-                if dependent_contexts.len() == 1 {
-                    let context = *dependent_contexts.iter().next().unwrap();
-                    self.graph[node_idx].context = Some(context);
-                    changed = true;
-                }
-            }
-        }
-
-        // Phase 1b: Top-down propagation (from dependencies to dependents)
-        // This handles unreachable nodes that depend on typed nodes
-        changed = true;
-        while changed {
-            changed = false;
-            let all_nodes: Vec<NodeIndex> = self.graph.node_indices().collect();
-
-            for node_idx in all_nodes {
-                if self.graph[node_idx].context.is_some() {
-                    continue;
-                }
-
-                let dependencies: Vec<NodeIndex> = self
-                    .graph
-                    .neighbors_directed(node_idx, Direction::Incoming)
-                    .collect();
-
-                if dependencies.is_empty() {
-                    continue;
-                }
-
-                let dependency_contexts: HashSet<Context> = dependencies
-                    .iter()
-                    .filter_map(|&idx| self.graph[idx].context)
-                    .collect();
-
-                if dependency_contexts.len() == 1 {
-                    let context = *dependency_contexts.iter().next().unwrap();
-                    self.graph[node_idx].context = Some(context);
-                    changed = true;
-                }
-            }
-        }
-
-        Ok(())
     }
 
     fn phase2_find_and_process_untyped_components(&mut self) -> Result<()> {
@@ -387,47 +358,59 @@ impl RenderGraph {
         Ok(())
     }
 
-    fn find_untyped_component(
+    fn find_component<F>(
         &self,
         start: NodeIndex,
         visited: &mut HashSet<NodeIndex>,
-    ) -> (Vec<NodeIndex>, bool) {
+        should_include: F,
+        get_neighbors: impl Fn(&DiGraph<GraphNode, EdgeType>, NodeIndex) -> Vec<NodeIndex>,
+    ) -> Vec<NodeIndex>
+    where
+        F: Fn(NodeIndex) -> bool,
+    {
         let mut component = Vec::new();
         let mut stack = vec![start];
 
-        // First pass: find all connected untyped nodes
         while let Some(node_idx) = stack.pop() {
             if visited.contains(&node_idx) {
                 continue;
             }
 
-            if self.graph[node_idx].context.is_some() {
+            if !should_include(node_idx) {
                 continue;
             }
 
             visited.insert(node_idx);
             component.push(node_idx);
 
-            for neighbor in self.graph.neighbors_undirected(node_idx) {
-                if !visited.contains(&neighbor) && self.graph[neighbor].context.is_none() {
+            for neighbor in get_neighbors(&self.graph, node_idx) {
+                if !visited.contains(&neighbor) {
                     stack.push(neighbor);
                 }
             }
         }
 
-        // Second pass: check if any node in component has typed dependencies
-        let mut has_typed_dep = false;
-        for &node_idx in &component {
-            for dependency in self.graph.neighbors_directed(node_idx, Direction::Incoming) {
-                if self.graph[dependency].context.is_some() {
-                    has_typed_dep = true;
-                    break;
-                }
-            }
-            if has_typed_dep {
-                break;
-            }
-        }
+        component
+    }
+
+    fn find_untyped_component(
+        &self,
+        start: NodeIndex,
+        visited: &mut HashSet<NodeIndex>,
+    ) -> (Vec<NodeIndex>, bool) {
+        let component = self.find_component(
+            start,
+            visited,
+            |idx| self.graph[idx].context.is_none(),
+            |graph, idx| graph.neighbors_undirected(idx).collect(),
+        );
+
+        // Check if any node in component has typed dependencies
+        let has_typed_dep = component.iter().any(|&node_idx| {
+            self.graph
+                .neighbors_directed(node_idx, Direction::Incoming)
+                .any(|dep| self.graph[dep].context.is_some())
+        });
 
         (component, has_typed_dep)
     }
@@ -582,11 +565,7 @@ impl RenderGraph {
         let child_context = self.graph[child_idx].context;
         let parent_context = self.graph[parent_idx].context;
 
-        let edge_type = if child_context == parent_context {
-            EdgeType::Normal
-        } else {
-            EdgeType::Reference
-        };
+        let edge_type = edge_type_between(child_context, parent_context);
 
         self.graph.add_edge(child_idx, parent_idx, edge_type);
         Ok(())
@@ -686,9 +665,9 @@ impl RenderGraph {
                         // Edge direction: provider -> dependent
                         // Reference: dependent references provider
                         references.push(Reference {
-                            from_subgraph: to_sg,    // dependent
+                            from_subgraph: to_sg, // dependent
                             from_node: to_node.clone(),
-                            to_subgraph: from_sg,    // provider
+                            to_subgraph: from_sg, // provider
                             to_node: from_node.clone(),
                         });
                     }
@@ -709,40 +688,27 @@ impl RenderGraph {
                 continue;
             }
 
-            let mut component = Vec::new();
-            let mut stack = vec![start];
-
-            while let Some(node_idx) = stack.pop() {
-                if visited.contains(&node_idx) {
-                    continue;
-                }
-
-                visited.insert(node_idx);
-                component.push(node_idx);
-
-                // Follow Normal edges only (not Reference edges) within the same context
-                for edge in self.graph.edges(node_idx) {
-                    if edge.weight() == &EdgeType::Normal {
-                        let target = edge.target();
-                        if node_set.contains(&target) && !visited.contains(&target) {
-                            stack.push(target);
+            let component = self.find_component(
+                start,
+                &mut visited,
+                |idx| node_set.contains(&idx),
+                |graph, idx| {
+                    let mut neighbors = Vec::new();
+                    // Follow Normal edges only (not Reference edges)
+                    for edge in graph.edges(idx) {
+                        if edge.weight() == &EdgeType::Normal && node_set.contains(&edge.target()) {
+                            neighbors.push(edge.target());
                         }
                     }
-                }
-
-                // Also check incoming edges
-                for edge in self
-                    .graph
-                    .edges_directed(node_idx, petgraph::Direction::Incoming)
-                {
-                    if edge.weight() == &EdgeType::Normal {
-                        let source = edge.source();
-                        if node_set.contains(&source) && !visited.contains(&source) {
-                            stack.push(source);
+                    // Also check incoming edges
+                    for edge in graph.edges_directed(idx, Direction::Incoming) {
+                        if edge.weight() == &EdgeType::Normal && node_set.contains(&edge.source()) {
+                            neighbors.push(edge.source());
                         }
                     }
-                }
-            }
+                    neighbors
+                },
+            );
 
             components.push(component);
         }
@@ -772,8 +738,8 @@ impl RenderGraph {
             }
 
             let from_idx = sg_id_to_idx[&reference.from_subgraph]; // dependent
-            let to_idx = sg_id_to_idx[&reference.to_subgraph];     // provider
-            // Edge: provider -> dependent (provider must run first)
+            let to_idx = sg_id_to_idx[&reference.to_subgraph]; // provider
+                                                               // Edge: provider -> dependent (provider must run first)
             subgraph_dag.add_edge(to_idx, from_idx, ());
             added_edges.insert(edge);
         }
@@ -789,96 +755,52 @@ impl RenderGraph {
 }
 
 fn find_deps_in_expr(expr: &ASTNode, deps: &mut HashSet<String>) {
-    match expr {
-        ASTNode::StrandAccess(access) => {
-            if let ASTNode::Var(var) = &*access.base {
-                deps.insert(var.name.clone());
-            }
-        }
-        ASTNode::StrandRemap(remap) => {
-            if let ASTNode::Var(var) = &*remap.base {
-                deps.insert(var.name.clone());
-            }
-            for mapping in &remap.mappings {
-                find_deps_in_expr(&mapping.expr, deps);
-            }
-        }
-        ASTNode::Binary(bin) => {
-            find_deps_in_expr(&bin.left, deps);
-            find_deps_in_expr(&bin.right, deps);
-        }
-        ASTNode::Unary(un) => {
-            find_deps_in_expr(&un.expr, deps);
-        }
-        ASTNode::Call(call) => {
-            for arg in &call.args {
-                find_deps_in_expr(arg, deps);
-            }
-        }
-        ASTNode::If(if_expr) => {
-            find_deps_in_expr(&if_expr.condition, deps);
-            find_deps_in_expr(&if_expr.then_expr, deps);
-            find_deps_in_expr(&if_expr.else_expr, deps);
-        }
-        ASTNode::Tuple(tuple) => {
-            for item in &tuple.items {
-                find_deps_in_expr(item, deps);
-            }
-        }
-        ASTNode::Index(index) => {
-            find_deps_in_expr(&index.base, deps);
-            find_deps_in_expr(&index.index, deps);
-        }
-        ASTNode::Num(_) | ASTNode::Str(_) | ASTNode::Var(_) | ASTNode::Me(_) => {}
-        _ => {}
+    struct DepCollector<'a> {
+        deps: &'a mut HashSet<String>,
     }
+
+    impl<'a> ExprVisitor for DepCollector<'a> {
+        fn visit_strand_access(&mut self, base: &ASTNode, _out: &ASTNode) {
+            if let ASTNode::Var(var) = base {
+                self.deps.insert(var.name.clone());
+            }
+        }
+
+        fn visit_strand_remap(&mut self, base: &ASTNode, _strand: &str, _mappings: &[AxisMapping]) {
+            if let ASTNode::Var(var) = base {
+                self.deps.insert(var.name.clone());
+            }
+        }
+    }
+
+    let mut visitor = DepCollector { deps };
+    walk_expr(expr, &mut visitor);
 }
 
 fn find_output_deps_in_expr(expr: &ASTNode, deps: &mut Vec<(String, String)>) {
-    match expr {
-        ASTNode::StrandAccess(access) => {
-            if let ASTNode::Var(base_var) = &*access.base {
-                if let ASTNode::Var(out_var) = &*access.out {
-                    deps.push((base_var.name.clone(), out_var.name.clone()));
+    struct OutputDepCollector<'a> {
+        deps: &'a mut Vec<(String, String)>,
+    }
+
+    impl<'a> ExprVisitor for OutputDepCollector<'a> {
+        fn visit_strand_access(&mut self, base: &ASTNode, out: &ASTNode) {
+            if let ASTNode::Var(base_var) = base {
+                if let ASTNode::Var(out_var) = out {
+                    self.deps
+                        .push((base_var.name.clone(), out_var.name.clone()));
                 }
             }
         }
-        ASTNode::StrandRemap(remap) => {
-            if let ASTNode::Var(base_var) = &*remap.base {
-                deps.push((base_var.name.clone(), remap.strand.clone()));
-            }
-            for mapping in &remap.mappings {
-                find_output_deps_in_expr(&mapping.expr, deps);
+
+        fn visit_strand_remap(&mut self, base: &ASTNode, strand: &str, _mappings: &[AxisMapping]) {
+            if let ASTNode::Var(base_var) = base {
+                self.deps.push((base_var.name.clone(), strand.to_string()));
             }
         }
-        ASTNode::Binary(bin) => {
-            find_output_deps_in_expr(&bin.left, deps);
-            find_output_deps_in_expr(&bin.right, deps);
-        }
-        ASTNode::Unary(un) => {
-            find_output_deps_in_expr(&un.expr, deps);
-        }
-        ASTNode::Call(call) => {
-            for arg in &call.args {
-                find_output_deps_in_expr(arg, deps);
-            }
-        }
-        ASTNode::If(if_expr) => {
-            find_output_deps_in_expr(&if_expr.condition, deps);
-            find_output_deps_in_expr(&if_expr.then_expr, deps);
-            find_output_deps_in_expr(&if_expr.else_expr, deps);
-        }
-        ASTNode::Tuple(tuple) => {
-            for item in &tuple.items {
-                find_output_deps_in_expr(item, deps);
-            }
-        }
-        ASTNode::Index(index) => {
-            find_output_deps_in_expr(&index.base, deps);
-            find_output_deps_in_expr(&index.index, deps);
-        }
-        _ => {}
     }
+
+    let mut visitor = OutputDepCollector { deps };
+    walk_expr(expr, &mut visitor);
 }
 fn check_node_type(expr: &ASTNode, env: &Env) -> NodeType {
     match expr {
@@ -1110,7 +1032,8 @@ mod tests {
         assert!(has_context(&meta, Context::Visual));
 
         // Check all nodes are present across subgraphs
-        let all_audio_names: Vec<_> = meta.subgraphs
+        let all_audio_names: Vec<_> = meta
+            .subgraphs
             .iter()
             .filter(|sg| sg.context == Context::Audio)
             .flat_map(|sg| &sg.node_names)
