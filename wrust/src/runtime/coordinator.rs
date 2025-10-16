@@ -54,10 +54,9 @@ impl Coordinator {
     }
 
     pub fn execute(&self, env: &Env) -> Result<()> {
-        let meta_graph = self
-            .meta_graph
-            .as_ref()
-            .ok_or_else(|| WeftError::Runtime("Must call compile() before execute()".to_string()))?;
+        let meta_graph = self.meta_graph.as_ref().ok_or_else(|| {
+            WeftError::Runtime("Must call compile() before execute()".to_string())
+        })?;
 
         for &subgraph_id in &meta_graph.execution_order {
             let subgraph = &meta_graph.subgraphs[subgraph_id];
@@ -90,9 +89,9 @@ impl Coordinator {
         })?;
 
         let backends = self.backends.borrow();
-        let backend = backends.get(backend_idx).ok_or_else(|| {
-            WeftError::Runtime("Backend index out of bounds".to_string())
-        })?;
+        let backend = backends
+            .get(backend_idx)
+            .ok_or_else(|| WeftError::Runtime("Backend index out of bounds".to_string()))?;
 
         if backend.supports_handles() {
             if let Ok(handle) = backend.get_handle(instance, output) {
@@ -106,9 +105,9 @@ impl Coordinator {
         Ok(DataRef::ValueGetter(Box::new(
             move |coords: &HashMap<String, f64>, env: &Env, coordinator: &Coordinator| {
                 let backends = coordinator.backends.borrow();
-                let backend = backends.get(backend_idx).ok_or_else(|| {
-                    WeftError::Runtime("Backend index out of bounds".to_string())
-                })?;
+                let backend = backends
+                    .get(backend_idx)
+                    .ok_or_else(|| WeftError::Runtime("Backend index out of bounds".to_string()))?;
                 backend.get_value_at(&instance_owned, &output_owned, coords, env, coordinator)
             },
         )))
